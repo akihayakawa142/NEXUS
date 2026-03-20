@@ -1,1394 +1,1057 @@
 --[[
     NEXUS PREMIUM - Murder Mystery 2
+    Mod Menu Profissional com Design VexonHub
+    Compatível com executors mobile e PC
     Versão: 2.0
-    Design: VexonHub inspired
-    Funcionalidades completas: Aimbot, ESP, Auto Farm, Movimentação, Combate, Proteção, Misc
-    Compatível com PC e Mobile (toque arrastável)
-    Persistência de configurações (writefile/readfile)
-    Webhook de atualização (opcional)
-    Interface com categorias laterais, switches, sliders, botões
-    Notificações elegantes
 ]]
 
--- ================= CONFIGURAÇÕES INICIAIS =================
+-- ==================== CONFIGURAÇÕES GLOBAIS ====================
 local Players = game:GetService("Players")
 local LocalPlayer = Players.LocalPlayer
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
-local VirtualUser = game:GetService("VirtualUser")
-local Workspace = game:GetService("Workspace")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local HttpService = game:GetService("HttpService")
+local Workspace = game:GetService("Workspace")
+local Camera = Workspace.CurrentCamera
+local VirtualInput = game:GetService("VirtualInput") -- pode não existir em mobile
 
--- ================= CONFIGURAÇÕES PERSISTENTES =================
+-- Verificar se o executor permite escrita de arquivos
+local canWrite = pcall(function() writefile("test.txt", "test") end)
+if canWrite then
+    writefile("test.txt", "") -- limpa
+end
+
+-- ==================== CONFIGURAÇÕES PADRÃO ====================
 local Settings = {
-    -- Aimbot
     Aimbot = {
         Enabled = false,
-        Silent = true,
-        Target = "Murderer", -- "Murderer", "Sheriff", "Any"
-        Smoothness = 0.3,
-        MaxDistance = 100,
-        FOV = {
-            Enabled = true,
-            Radius = 150,
-            Color = Color3.fromRGB(255, 0, 0),
-            Thickness = 2
-        }
+        Silent = false,
+        FOV = 150,
+        Target = "Murderer", -- "Murderer", "Sheriff", "Innocent", "All"
+        Smoothness = 50
     },
-    -- ESP
     ESP = {
-        Enabled = false,
-        Players = {
-            Enabled = true,
-            ShowBoxes = true,
-            ShowNames = true,
-            ShowHealth = false,
-            ShowDistance = true,
-            Colors = {
-                Innocent = Color3.fromRGB(255, 255, 255),
-                Murderer = Color3.fromRGB(255, 0, 0),
-                Sheriff = Color3.fromRGB(0, 255, 0),
-                Knife = Color3.fromRGB(255, 165, 0)
-            }
-        },
-        Items = {
-            Enabled = true,
-            ShowCoins = true,
-            ShowKnife = true
-        },
-        Tracers = {
-            Enabled = false,
-            Color = Color3.fromRGB(0, 255, 255)
-        },
-        Radar = {
-            Enabled = false,
-            Size = 150,
-            Position = "BottomRight" -- "TopLeft", "TopRight", "BottomLeft", "BottomRight"
+        Enabled = true,
+        Players = true,
+        Items = true,
+        Tracers = false,
+        Radar = false,
+        Colors = {
+            Murderer = Color3.fromRGB(255, 0, 0),
+            Sheriff = Color3.fromRGB(0, 100, 255),
+            Innocent = Color3.fromRGB(0, 255, 0),
+            Knife = Color3.fromRGB(255, 165, 0)
         }
     },
-    -- Auto Farm
     AutoFarm = {
-        Enabled = false,
-        CollectCoins = true,
-        CollectKnife = true,
-        AutoReset = false,
-        AutoPlay = false,
-        FarmSpeed = 0.5 -- segundos entre coletas
+        Collect = false,
+        Reset = false,
+        AutoPlay = false
     },
-    -- Movimentação
     Movement = {
         Fly = false,
-        Noclip = false,
-        SpeedHack = {
-            Enabled = false,
-            Speed = 32
-        },
-        Teleport = {
-            Enabled = false,
-            Target = "Items" -- "Items", "Players", "Coordinates"
-        },
-        AntiAFK = false
+        Speed = 16,
+        AntiAFK = true
     },
-    -- Combate
     Combat = {
         KillAll = false,
         InstantWin = false,
-        AutoParry = false,
-        NoRecoil = false
+        AutoParry = false
     },
-    -- Proteção
     Protection = {
         AntiBan = true,
-        RandomDelay = 0.1,
-        Webhook = "https://discord.com/api/webhooks/seu-webhook-aqui" -- substitua
+        Webhook = "",
+        CheckUpdates = false
     },
-    -- Misc
     Misc = {
         AutoBuy = false,
-        StealthMode = false,
-        SoundEffects = true,
-        PrimaryColor = Color3.fromRGB(138, 43, 226) -- roxo
+        Stealth = false
+    },
+    UI = {
+        Opacity = 0.9,
+        PrimaryColor = "Purple", -- "Purple", "Blue", "Red"
+        Sounds = false
     }
 }
 
--- ================= VARIÁVEIS GLOBAIS =================
-local ESPObjects = {} -- player -> { box, name, distance, tracer, ... }
-local RadarObjects = {} -- para radar
-local NotificationQueue = {}
-local CurrentCategory = "Aimbot"
+-- Cores primárias
+local ColorSchemes = {
+    Purple = Color3.fromRGB(138, 43, 226),
+    Blue = Color3.fromRGB(0, 100, 255),
+    Red = Color3.fromRGB(255, 50, 50)
+}
+local PrimaryColor = ColorSchemes[Settings.UI.PrimaryColor]
+
+-- ==================== VARIÁVEIS GLOBAIS ====================
+local Gui = nil
+local FloatingButton = nil
+local MainMenu = nil
 local MenuOpen = false
 local Dragging = false
-local DragStart, StartPos
+local DragStart, DragStartPos
+local Notifications = {}
+local ESPObjects = {}
+local RadarFrame = nil
+local CurrentCategory = "Aimbot"
+local PlayerPositions = {} -- para radar
+local LastUpdate = tick()
+local FlySpeed = 0
 local Flying = false
-local Noclip = false
-local OriginalSpeed = 16 -- velocidade padrão do MM2
+local OriginalSpeed = 16
 
--- ================= FUNÇÕES AUXILIARES =================
+-- ==================== FUNÇÕES AUXILIARES ====================
 function SaveSettings()
-    local data = {}
-    for cat, vals in pairs(Settings) do
-        data[cat] = vals
-    end
-    local success, err = pcall(function()
-        writefile("NexusPremium.json", HttpService:JSONEncode(data))
-    end)
-    if not success then
-        warn("Falha ao salvar configurações: " .. tostring(err))
-    end
+    if not canWrite then return end
+    local data = HttpService:JSONEncode(Settings)
+    writefile("NexusPremium.json", data)
 end
 
 function LoadSettings()
-    local success, data = pcall(function()
-        if isfile("NexusPremium.json") then
-            return HttpService:JSONDecode(readfile("NexusPremium.json"))
+    if not canWrite or not isfile("NexusPremium.json") then return end
+    local data = readfile("NexusPremium.json")
+    if data and data ~= "" then
+        local loaded = HttpService:JSONDecode(data)
+        for cat, vals in pairs(loaded) do
+            if Settings[cat] then
+                for k, v in pairs(vals) do
+                    Settings[cat][k] = v
+                end
+            end
+        end
+    end
+    -- Aplicar cores
+    PrimaryColor = ColorSchemes[Settings.UI.PrimaryColor] or ColorSchemes.Purple
+end
+
+function Notify(text, icon)
+    -- Cria uma notificação simples
+    local notif = Instance.new("Frame")
+    notif.Size = UDim2.new(0, 250, 0, 40)
+    notif.Position = UDim2.new(1, -270, 0, 10)
+    notif.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+    notif.BackgroundTransparency = 0.2
+    notif.BorderSizePixel = 0
+    notif.Parent = Gui
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = notif
+
+    local label = Instance.new("TextLabel")
+    label.Size = UDim2.new(1, -10, 1, 0)
+    label.Position = UDim2.new(0, 5, 0, 0)
+    label.BackgroundTransparency = 1
+    label.Text = text
+    label.TextColor3 = Color3.fromRGB(255, 255, 255)
+    label.TextSize = 14
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Parent = notif
+
+    if icon then
+        local iconImg = Instance.new("ImageLabel")
+        iconImg.Size = UDim2.new(0, 20, 0, 20)
+        iconImg.Position = UDim2.new(0, 5, 0.5, -10)
+        iconImg.Image = icon
+        iconImg.BackgroundTransparency = 1
+        iconImg.Parent = notif
+        label.Position = UDim2.new(0, 30, 0, 0)
+        label.Size = UDim2.new(1, -35, 1, 0)
+    end
+
+    TweenService:Create(notif, TweenInfo.new(0.5, Enum.EasingStyle.Quad), { Position = UDim2.new(1, -270, 0, 10) }):Play()
+    wait(2)
+    TweenService:Create(notif, TweenInfo.new(0.5, Enum.EasingStyle.Quad), { Position = UDim2.new(1, -10, 0, 10) }):Play()
+    wait(0.5)
+    notif:Destroy()
+end
+
+-- ==================== CRIAÇÃO DOS ELEMENTOS UI ====================
+function CreateFloatingButton()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "NexusPremium"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
+
+    local button = Instance.new("ImageButton")
+    button.Size = UDim2.new(0, 50, 0, 50)
+    button.Position = UDim2.new(0, 10, 0, 100)
+    button.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    button.BackgroundTransparency = 1
+    button.Image = "https://img.icons8.com/nolan/1200/nexus-vortex--v2.jpg" -- imagem da bolinha
+    button.ImageColor3 = Color3.fromRGB(255, 255, 255)
+    button.ImageTransparency = 0.3
+    button.Parent = screenGui
+
+    -- Arredondamento
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(1, 0)
+    corner.Parent = button
+
+    -- Carregar posição salva
+    if isfile("NexusButtonPos.txt") then
+        local pos = readfile("NexusButtonPos.txt")
+        local x, y = pos:match("(%d+),(%d+)")
+        if x and y then
+            button.Position = UDim2.new(0, tonumber(x), 0, tonumber(y))
+        end
+    end
+
+    -- Arrastar
+    local dragging = false
+    local dragStart, startPos
+    button.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = true
+            dragStart = input.Position
+            startPos = button.Position
         end
     end)
-    if success and data then
-        for cat, vals in pairs(data) do
-            if Settings[cat] then
-                for key, val in pairs(vals) do
-                    if type(Settings[cat][key]) == type(val) then
-                        Settings[cat][key] = val
+    button.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+            if canWrite then
+                writefile("NexusButtonPos.txt", tostring(button.Position.X.Offset) .. "," .. tostring(button.Position.Y.Offset))
+            end
+        end
+    end)
+    button.InputChanged:Connect(function(input)
+        if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            local delta = input.Position - dragStart
+            button.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+
+    -- Abrir/fechar menu
+    button.MouseButton1Click:Connect(function()
+        MenuOpen = not MenuOpen
+        if MenuOpen then
+            MainMenu.Visible = true
+            TweenService:Create(MainMenu, TweenInfo.new(0.3, Enum.EasingStyle.Quad), { BackgroundTransparency = 0.1 }):Play()
+            TweenService:Create(MainMenu, TweenInfo.new(0.3, Enum.EasingStyle.Quad), { Position = UDim2.new(0.5, -MainMenu.AbsoluteSize.X/2, 0.5, -MainMenu.AbsoluteSize.Y/2) }):Play()
+        else
+            TweenService:Create(MainMenu, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { BackgroundTransparency = 1 }):Play()
+            wait(0.2)
+            MainMenu.Visible = false
+        end
+    end)
+
+    return screenGui, button
+end
+
+function CreateMainMenu()
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Size = UDim2.new(0, 400, 0, 500)
+    mainFrame.Position = UDim2.new(0.5, -200, 0.5, -250)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
+    mainFrame.BackgroundTransparency = 0.1
+    mainFrame.BorderSizePixel = 0
+    mainFrame.Visible = false
+    mainFrame.Parent = Gui
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 20)
+    corner.Parent = mainFrame
+
+    -- Sombra
+    local shadow = Instance.new("UIShadow")
+    shadow.Parent = mainFrame
+
+    -- Categorias (lateral esquerda)
+    local categoriesFrame = Instance.new("Frame")
+    categoriesFrame.Size = UDim2.new(0, 100, 1, 0)
+    categoriesFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    categoriesFrame.BackgroundTransparency = 0.5
+    categoriesFrame.Parent = mainFrame
+
+    local categories = {
+        { name = "Aimbot", icon = "https://img.icons8.com/ios-filled/50/ffffff/aim.png" },
+        { name = "ESP", icon = "https://img.icons8.com/ios-filled/50/ffffff/eye.png" },
+        { name = "Auto Farm", icon = "https://img.icons8.com/ios-filled/50/ffffff/coin.png" },
+        { name = "Movimentação", icon = "https://img.icons8.com/ios-filled/50/ffffff/running.png" },
+        { name = "Combate", icon = "https://img.icons8.com/ios-filled/50/ffffff/sword.png" },
+        { name = "Proteção", icon = "https://img.icons8.com/ios-filled/50/ffffff/shield.png" },
+        { name = "Misc", icon = "https://img.icons8.com/ios-filled/50/ffffff/tools.png" },
+        { name = "Configurações", icon = "https://img.icons8.com/ios-filled/50/ffffff/settings.png" }
+    }
+
+    local categoryButtons = {}
+    for i, cat in ipairs(categories) do
+        local btn = Instance.new("ImageButton")
+        btn.Size = UDim2.new(1, 0, 0, 60)
+        btn.Position = UDim2.new(0, 0, 0, (i-1)*65)
+        btn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+        btn.BackgroundTransparency = 0.5
+        btn.Image = cat.icon
+        btn.ImageColor3 = Color3.fromRGB(255, 255, 255)
+        btn.Parent = categoriesFrame
+
+        local btnCorner = Instance.new("UICorner")
+        btnCorner.CornerRadius = UDim.new(0, 12)
+        btnCorner.Parent = btn
+
+        local label = Instance.new("TextLabel")
+        label.Size = UDim2.new(1, 0, 0, 20)
+        label.Position = UDim2.new(0, 0, 1, -25)
+        label.BackgroundTransparency = 1
+        label.Text = cat.name
+        label.TextColor3 = Color3.fromRGB(255, 255, 255)
+        label.TextSize = 10
+        label.Font = Enum.Font.GothamBold
+        label.Parent = btn
+
+        btn.MouseButton1Click:Connect(function()
+            CurrentCategory = cat.name
+            UpdateContentFrame()
+        end)
+        categoryButtons[cat.name] = btn
+    end
+
+    -- Área de conteúdo
+    local contentFrame = Instance.new("Frame")
+    contentFrame.Size = UDim2.new(1, -110, 1, -20)
+    contentFrame.Position = UDim2.new(0, 105, 0, 10)
+    contentFrame.BackgroundTransparency = 1
+    contentFrame.Parent = mainFrame
+
+    -- Imagem de perfil
+    local profileImage = Instance.new("ImageLabel")
+    profileImage.Size = UDim2.new(0, 40, 0, 40)
+    profileImage.Position = UDim2.new(1, -50, 0, 10)
+    profileImage.Image = "https://play-lh.googleusercontent.com/5jcAEbmAQ-4XAYIlHGl_ZW9X9GJlTImrA4EBYBztutHPou2W3DB-w2FR7oOOE22_FPSv=w240-h480-rw"
+    profileImage.BackgroundTransparency = 1
+    profileImage.Parent = mainFrame
+
+    local profileCorner = Instance.new("UICorner")
+    profileCorner.CornerRadius = UDim.new(1, 0)
+    profileCorner.Parent = profileImage
+
+    -- Função para atualizar o conteúdo conforme categoria
+    local function UpdateContentFrame()
+        for _, child in pairs(contentFrame:GetChildren()) do
+            child:Destroy()
+        end
+
+        -- ScrollView
+        local scroll = Instance.new("ScrollingFrame")
+        scroll.Size = UDim2.new(1, 0, 1, 0)
+        scroll.BackgroundTransparency = 1
+        scroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+        scroll.ScrollBarThickness = 4
+        scroll.Parent = contentFrame
+
+        local layout = Instance.new("UIListLayout")
+        layout.Padding = UDim.new(0, 8)
+        layout.SortOrder = Enum.SortOrder.LayoutOrder
+        layout.Parent = scroll
+
+        local yOffset = 0
+
+        -- Funções para criar elementos
+        function CreateToggle(text, defaultValue, callback)
+            local frame = Instance.new("Frame")
+            frame.Size = UDim2.new(1, -20, 0, 50)
+            frame.BackgroundTransparency = 1
+            frame.Parent = scroll
+
+            local label = Instance.new("TextLabel")
+            label.Size = UDim2.new(0.6, 0, 1, 0)
+            label.Position = UDim2.new(0, 0, 0, 0)
+            label.Text = text
+            label.TextColor3 = Color3.fromRGB(255, 255, 255)
+            label.BackgroundTransparency = 1
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.Parent = frame
+
+            local toggleBg = Instance.new("Frame")
+            toggleBg.Size = UDim2.new(0, 50, 0, 24)
+            toggleBg.Position = UDim2.new(1, -60, 0.5, -12)
+            toggleBg.BackgroundColor3 = defaultValue and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(80, 80, 100)
+            toggleBg.BorderSizePixel = 0
+            toggleBg.Parent = frame
+
+            local toggleCorner = Instance.new("UICorner")
+            toggleCorner.CornerRadius = UDim.new(1, 0)
+            toggleCorner.Parent = toggleBg
+
+            local knob = Instance.new("Frame")
+            knob.Size = UDim2.new(0, 20, 0, 20)
+            knob.Position = defaultValue and UDim2.new(1, -22, 0.5, -10) or UDim2.new(0, 2, 0.5, -10)
+            knob.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+            knob.BorderSizePixel = 0
+            knob.Parent = toggleBg
+
+            local knobCorner = Instance.new("UICorner")
+            knobCorner.CornerRadius = UDim.new(1, 0)
+            knobCorner.Parent = knob
+
+            local active = defaultValue
+            local btn = Instance.new("TextButton")
+            btn.Size = UDim2.new(1, 0, 1, 0)
+            btn.BackgroundTransparency = 1
+            btn.Text = ""
+            btn.Parent = frame
+
+            btn.MouseButton1Click:Connect(function()
+                active = not active
+                toggleBg.BackgroundColor3 = active and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(80, 80, 100)
+                knob.Position = active and UDim2.new(1, -22, 0.5, -10) or UDim2.new(0, 2, 0.5, -10)
+                callback(active)
+                if Settings.UI.Sounds then
+                    -- place sound
+                end
+            end)
+
+            return frame
+        end
+
+        function CreateSlider(text, min, max, defaultValue, callback)
+            local frame = Instance.new("Frame")
+            frame.Size = UDim2.new(1, -20, 0, 60)
+            frame.BackgroundTransparency = 1
+            frame.Parent = scroll
+
+            local label = Instance.new("TextLabel")
+            label.Size = UDim2.new(1, 0, 0, 20)
+            label.Text = text .. ": " .. tostring(defaultValue)
+            label.TextColor3 = Color3.fromRGB(255, 255, 255)
+            label.BackgroundTransparency = 1
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.Parent = frame
+
+            local sliderBg = Instance.new("Frame")
+            sliderBg.Size = UDim2.new(1, 0, 0, 4)
+            sliderBg.Position = UDim2.new(0, 0, 0, 30)
+            sliderBg.BackgroundColor3 = Color3.fromRGB(80, 80, 100)
+            sliderBg.BorderSizePixel = 0
+            sliderBg.Parent = frame
+
+            local fill = Instance.new("Frame")
+            fill.Size = UDim2.new((defaultValue - min)/(max - min), 0, 1, 0)
+            fill.BackgroundColor3 = PrimaryColor
+            fill.BorderSizePixel = 0
+            fill.Parent = sliderBg
+
+            local knob = Instance.new("Frame")
+            knob.Size = UDim2.new(0, 12, 0, 12)
+            knob.Position = UDim2.new((defaultValue - min)/(max - min), -6, 0.5, -6)
+            knob.BackgroundColor3 = PrimaryColor
+            knob.BorderSizePixel = 0
+            knob.Parent = sliderBg
+
+            local knobCorner = Instance.new("UICorner")
+            knobCorner.CornerRadius = UDim.new(1, 0)
+            knobCorner.Parent = knob
+
+            local valueLabel = Instance.new("TextLabel")
+            valueLabel.Size = UDim2.new(0, 40, 0, 20)
+            valueLabel.Position = UDim2.new(1, -50, 0, 30)
+            valueLabel.Text = tostring(defaultValue)
+            valueLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+            valueLabel.BackgroundTransparency = 1
+            valueLabel.Parent = frame
+
+            local dragging = false
+            knob.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                    dragging = true
+                end
+            end)
+            knob.InputEnded:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+                    dragging = false
+                end
+            end)
+            knob.InputChanged:Connect(function(input)
+                if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+                    local pos = input.Position.X - sliderBg.AbsolutePosition.X
+                    local percent = math.clamp(pos / sliderBg.AbsoluteSize.X, 0, 1)
+                    local value = min + percent * (max - min)
+                    fill.Size = UDim2.new(percent, 0, 1, 0)
+                    knob.Position = UDim2.new(percent, -6, 0.5, -6)
+                    valueLabel.Text = string.format("%.0f", value)
+                    callback(value)
+                end
+            end)
+
+            return frame
+        end
+
+        function CreateDropdown(text, options, defaultOption, callback)
+            local frame = Instance.new("Frame")
+            frame.Size = UDim2.new(1, -20, 0, 60)
+            frame.BackgroundTransparency = 1
+            frame.Parent = scroll
+
+            local label = Instance.new("TextLabel")
+            label.Size = UDim2.new(1, 0, 0, 20)
+            label.Text = text
+            label.TextColor3 = Color3.fromRGB(255, 255, 255)
+            label.BackgroundTransparency = 1
+            label.TextXAlignment = Enum.TextXAlignment.Left
+            label.Parent = frame
+
+            local btn = Instance.new("TextButton")
+            btn.Size = UDim2.new(1, 0, 0, 30)
+            btn.Position = UDim2.new(0, 0, 0, 25)
+            btn.Text = defaultOption
+            btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            btn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+            btn.BorderSizePixel = 0
+            btn.Parent = frame
+
+            local btnCorner = Instance.new("UICorner")
+            btnCorner.CornerRadius = UDim.new(0, 8)
+            btnCorner.Parent = btn
+
+            local dropdownList = Instance.new("Frame")
+            dropdownList.Size = UDim2.new(1, 0, 0, 0)
+            dropdownList.Position = UDim2.new(0, 0, 0, 55)
+            dropdownList.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+            dropdownList.ClipsDescendants = true
+            dropdownList.Visible = false
+            dropdownList.Parent = frame
+
+            local listCorner = Instance.new("UICorner")
+            listCorner.CornerRadius = UDim.new(0, 8)
+            listCorner.Parent = dropdownList
+
+            for i, opt in ipairs(options) do
+                local optBtn = Instance.new("TextButton")
+                optBtn.Size = UDim2.new(1, 0, 0, 30)
+                optBtn.Position = UDim2.new(0, 0, 0, (i-1)*30)
+                optBtn.Text = opt
+                optBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+                optBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+                optBtn.BorderSizePixel = 0
+                optBtn.Parent = dropdownList
+
+                local optCorner = Instance.new("UICorner")
+                optCorner.CornerRadius = UDim.new(0, 6)
+                optCorner.Parent = optBtn
+
+                optBtn.MouseButton1Click:Connect(function()
+                    btn.Text = opt
+                    dropdownList.Visible = false
+                    dropdownList.Size = UDim2.new(1, 0, 0, 0)
+                    callback(opt)
+                end)
+            end
+
+            btn.MouseButton1Click:Connect(function()
+                dropdownList.Visible = not dropdownList.Visible
+                if dropdownList.Visible then
+                    dropdownList.Size = UDim2.new(1, 0, 0, #options * 30)
+                else
+                    dropdownList.Size = UDim2.new(1, 0, 0, 0)
+                end
+            end)
+
+            return frame
+        end
+
+        function CreateButton(text, callback)
+            local btn = Instance.new("TextButton")
+            btn.Size = UDim2.new(1, -20, 0, 40)
+            btn.Text = text
+            btn.TextColor3 = Color3.fromRGB(255, 255, 255)
+            btn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+            btn.BorderSizePixel = 0
+            btn.Parent = scroll
+
+            local btnCorner = Instance.new("UICorner")
+            btnCorner.CornerRadius = UDim.new(0, 8)
+            btnCorner.Parent = btn
+
+            btn.MouseButton1Click:Connect(callback)
+            return btn
+        end
+
+        -- Conteúdo por categoria
+        if CurrentCategory == "Aimbot" then
+            CreateToggle("Ativar Aimbot", Settings.Aimbot.Enabled, function(v)
+                Settings.Aimbot.Enabled = v
+                Notify("Aimbot " .. (v and "ativado" or "desativado"))
+                SaveSettings()
+            end)
+            CreateToggle("Silent Aim", Settings.Aimbot.Silent, function(v)
+                Settings.Aimbot.Silent = v
+                Notify("Silent Aim " .. (v and "ativado" or "desativado"))
+                SaveSettings()
+            end)
+            CreateSlider("Campo de mira", 50, 300, Settings.Aimbot.FOV, function(v)
+                Settings.Aimbot.FOV = v
+                SaveSettings()
+            end)
+            CreateDropdown("Alvo preferencial", {"Assassino", "Xerife", "Inocente", "Todos"}, Settings.Aimbot.Target, function(v)
+                Settings.Aimbot.Target = v
+                SaveSettings()
+            end)
+            CreateSlider("Smoothness", 0, 100, Settings.Aimbot.Smoothness, function(v)
+                Settings.Aimbot.Smoothness = v
+                SaveSettings()
+            end)
+
+        elseif CurrentCategory == "ESP" then
+            CreateToggle("ESP Jogadores", Settings.ESP.Players, function(v)
+                Settings.ESP.Players = v
+                SaveSettings()
+                if v then CreateESP() else ClearESP() end
+            end)
+            CreateToggle("ESP Itens", Settings.ESP.Items, function(v)
+                Settings.ESP.Items = v
+                SaveSettings()
+            end)
+            CreateToggle("Traçadores", Settings.ESP.Tracers, function(v)
+                Settings.ESP.Tracers = v
+                SaveSettings()
+            end)
+            CreateToggle("Radar 2D", Settings.ESP.Radar, function(v)
+                Settings.ESP.Radar = v
+                if v then CreateRadar() else if RadarFrame then RadarFrame:Destroy() end end
+                SaveSettings()
+            end)
+
+        elseif CurrentCategory == "Auto Farm" then
+            CreateToggle("Auto Collect", Settings.AutoFarm.Collect, function(v)
+                Settings.AutoFarm.Collect = v
+                SaveSettings()
+            end)
+            CreateToggle("Auto Reset", Settings.AutoFarm.Reset, function(v)
+                Settings.AutoFarm.Reset = v
+                SaveSettings()
+            end)
+            CreateToggle("Auto Play", Settings.AutoFarm.AutoPlay, function(v)
+                Settings.AutoFarm.AutoPlay = v
+                SaveSettings()
+            end)
+
+        elseif CurrentCategory == "Movimentação" then
+            CreateToggle("Fly / NoClip", Settings.Movement.Fly, function(v)
+                Settings.Movement.Fly = v
+                SaveSettings()
+                if v then
+                    Flying = true
+                    FlySpeed = 50
+                else
+                    Flying = false
+                end
+            end)
+            CreateSlider("Speed Hack", 16, 100, Settings.Movement.Speed, function(v)
+                Settings.Movement.Speed = v
+                if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+                    LocalPlayer.Character.Humanoid.WalkSpeed = v
+                end
+                SaveSettings()
+            end)
+            CreateButton("Teletransporte para Item", function()
+                -- Implementar teleporte para item mais próximo
+                local closestItem = nil
+                local closestDist = math.huge
+                for _, obj in pairs(Workspace:GetDescendants()) do
+                    if obj:IsA("BasePart") and (obj.Name:find("Coin") or obj.Name:find("Knife")) then
+                        local dist = (LocalPlayer.Character.HumanoidRootPart.Position - obj.Position).magnitude
+                        if dist < closestDist then
+                            closestDist = dist
+                            closestItem = obj
+                        end
+                    end
+                end
+                if closestItem then
+                    LocalPlayer.Character.HumanoidRootPart.CFrame = closestItem.CFrame + Vector3.new(0, 3, 0)
+                    Notify("Teleportado para item")
+                else
+                    Notify("Nenhum item próximo encontrado")
+                end
+            end)
+            CreateToggle("Anti-AFK", Settings.Movement.AntiAFK, function(v)
+                Settings.Movement.AntiAFK = v
+                SaveSettings()
+            end)
+
+        elseif CurrentCategory == "Combate" then
+            CreateButton("Kill All", function()
+                for _, player in pairs(Players:GetPlayers()) do
+                    if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Humanoid") then
+                        player.Character.Humanoid.Health = 0
+                    end
+                end
+                Notify("Kill All executado")
+            end)
+            CreateButton("Instant Win", function()
+                -- Simula vitória instantânea (pode não funcionar em todos servidores)
+                -- Tenta enviar um evento remoto (exemplo)
+                local remote = game:GetService("ReplicatedStorage"):FindFirstChild("WinEvent") -- ajustar
+                if remote then
+                    remote:FireServer()
+                end
+                Notify("Instant Win tentado")
+            end)
+            CreateToggle("Auto Parry", Settings.Combat.AutoParry, function(v)
+                Settings.Combat.AutoParry = v
+                SaveSettings()
+            end)
+
+        elseif CurrentCategory == "Proteção" then
+            CreateToggle("Anti-Ban", Settings.Protection.AntiBan, function(v)
+                Settings.Protection.AntiBan = v
+                SaveSettings()
+            end)
+            -- Webhook
+            local webhookFrame = Instance.new("Frame")
+            webhookFrame.Size = UDim2.new(1, -20, 0, 80)
+            webhookFrame.BackgroundTransparency = 1
+            webhookFrame.Parent = scroll
+
+            local webhookLabel = Instance.new("TextLabel")
+            webhookLabel.Size = UDim2.new(1, 0, 0, 20)
+            webhookLabel.Text = "Webhook URL:"
+            webhookLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+            webhookLabel.BackgroundTransparency = 1
+            webhookLabel.TextXAlignment = Enum.TextXAlignment.Left
+            webhookLabel.Parent = webhookFrame
+
+            local webhookInput = Instance.new("TextBox")
+            webhookInput.Size = UDim2.new(1, 0, 0, 30)
+            webhookInput.Position = UDim2.new(0, 0, 0, 25)
+            webhookInput.PlaceholderText = "https://discord.com/api/webhooks/..."
+            webhookInput.Text = Settings.Protection.Webhook or ""
+            webhookInput.TextColor3 = Color3.fromRGB(255, 255, 255)
+            webhookInput.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+            webhookInput.BorderSizePixel = 0
+            webhookInput.Parent = webhookFrame
+
+            local webhookCorner = Instance.new("UICorner")
+            webhookCorner.CornerRadius = UDim.new(0, 8)
+            webhookCorner.Parent = webhookInput
+
+            webhookInput:GetPropertyChangedSignal("Text"):Connect(function()
+                Settings.Protection.Webhook = webhookInput.Text
+                SaveSettings()
+            end)
+
+            CreateButton("Testar Webhook", function()
+                if Settings.Protection.Webhook and Settings.Protection.Webhook ~= "" then
+                    local success, err = pcall(function()
+                        HttpService:PostAsync(Settings.Protection.Webhook, HttpService:JSONEncode({ content = "NEXUS Premium: Teste de notificação!" }))
+                    end)
+                    if success then
+                        Notify("Webhook enviado com sucesso!")
+                    else
+                        Notify("Erro ao enviar webhook: " .. tostring(err))
+                    end
+                else
+                    Notify("Insira uma URL de webhook válida")
+                end
+            end)
+
+            CreateButton("Verificar Atualizações", function()
+                -- Verificar versão no pastebin ou github
+                local url = "https://raw.githubusercontent.com/seuuser/nexus/version.txt" -- substituir
+                local success, data = pcall(function()
+                    return game:HttpGet(url)
+                end)
+                if success and data then
+                    local latestVersion = data:match("VERSION=(.+)")
+                    if latestVersion and latestVersion ~= "2.0" then
+                        Notify("Nova versão disponível: " .. latestVersion)
+                    else
+                        Notify("Você está na versão mais recente")
+                    end
+                else
+                    Notify("Erro ao verificar atualizações")
+                end
+            end)
+
+        elseif CurrentCategory == "Misc" then
+            CreateToggle("Auto Buy", Settings.Misc.AutoBuy, function(v)
+                Settings.Misc.AutoBuy = v
+                SaveSettings()
+            end)
+            CreateButton("Recolher Todas Moedas", function()
+                for _, obj in pairs(Workspace:GetDescendants()) do
+                    if obj:IsA("BasePart") and obj.Name:find("Coin") then
+                        local click = obj:FindFirstChildOfClass("ClickDetector")
+                        if click then
+                            click:FireClick()
+                        end
+                    end
+                end
+                Notify("Moedas recolhidas")
+            end)
+            CreateToggle("Modo Stealth", Settings.Misc.Stealth, function(v)
+                Settings.Misc.Stealth = v
+                if v then
+                    -- Desativar visualmente as funções (manter lógica)
+                    -- Por exemplo, esconder ESP, etc.
+                end
+                SaveSettings()
+            end)
+
+        elseif CurrentCategory == "Configurações" then
+            CreateButton("Salvar Configurações", function()
+                SaveSettings()
+                Notify("Configurações salvas")
+            end)
+            CreateButton("Carregar Configurações", function()
+                LoadSettings()
+                Notify("Configurações carregadas")
+                -- Recriar interface para aplicar alterações
+                UpdateContentFrame()
+            end)
+            CreateSlider("Opacidade do Menu", 0.5, 1, Settings.UI.Opacity, function(v)
+                Settings.UI.Opacity = v
+                mainFrame.BackgroundTransparency = 1 - v
+                SaveSettings()
+            end)
+            CreateDropdown("Cor Primária", {"Roxo", "Azul", "Vermelho"}, Settings.UI.PrimaryColor, function(v)
+                Settings.UI.PrimaryColor = v
+                PrimaryColor = ColorSchemes[v]
+                SaveSettings()
+                -- Atualizar cores dos elementos
+                UpdateContentFrame() -- recria para aplicar nova cor
+            end)
+            CreateToggle("Sons de Ativação", Settings.UI.Sounds, function(v)
+                Settings.UI.Sounds = v
+                SaveSettings()
+            end)
+        end
+
+        -- Atualizar canvas size do scroll
+        local function updateCanvas()
+            local totalHeight = 0
+            for _, child in pairs(scroll:GetChildren()) do
+                if child:IsA("Frame") or child:IsA("TextButton") then
+                    totalHeight = totalHeight + child.Size.Y.Offset + layout.Padding.Offset
+                end
+            end
+            scroll.CanvasSize = UDim2.new(0, 0, 0, totalHeight + 10)
+        end
+        layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateCanvas)
+        updateCanvas()
+    end
+
+    UpdateContentFrame()
+    return mainFrame
+end
+
+-- ==================== FUNÇÕES ESP (DRAWING) ====================
+local function CreateESP()
+    -- Implementação com Drawing (se suportado)
+    -- Se não, usar BillboardGui
+    pcall(function()
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                -- Criar objetos de desenho
+            end
+        end
+    end)
+end
+
+function ClearESP()
+    for _, obj in pairs(ESPObjects) do
+        if obj and obj.Remove then obj:Remove() end
+    end
+    ESPObjects = {}
+end
+
+-- ==================== RADAR 2D ====================
+function CreateRadar()
+    if RadarFrame then RadarFrame:Destroy() end
+    RadarFrame = Instance.new("Frame")
+    RadarFrame.Size = UDim2.new(0, 150, 0, 150)
+    RadarFrame.Position = UDim2.new(1, -160, 1, -160)
+    RadarFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+    RadarFrame.BackgroundTransparency = 0.5
+    RadarFrame.BorderSizePixel = 0
+    RadarFrame.Parent = Gui
+
+    local radarCorner = Instance.new("UICorner")
+    radarCorner.CornerRadius = UDim.new(0, 75)
+    radarCorner.Parent = RadarFrame
+
+    -- Atualizar posições
+    RunService.RenderStepped:Connect(function()
+        if not Settings.ESP.Radar then return end
+        -- Limpar pontos antigos
+        for _, child in pairs(RadarFrame:GetChildren()) do
+            if child:IsA("ImageLabel") then
+                child:Destroy()
+            end
+        end
+        local center = RadarFrame.AbsoluteSize / 2
+        local localPos = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character.HumanoidRootPart.Position or Vector3.new()
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                local relative = player.Character.HumanoidRootPart.Position - localPos
+                local angle = math.atan2(relative.X, relative.Z)
+                local dist = relative.Magnitude / 10 -- escala
+                local x = center.X + math.sin(angle) * dist
+                local z = center.Y + math.cos(angle) * dist
+                if x > 0 and x < RadarFrame.AbsoluteSize.X and z > 0 and z < RadarFrame.AbsoluteSize.Y then
+                    local dot = Instance.new("ImageLabel")
+                    dot.Size = UDim2.new(0, 4, 0, 4)
+                    dot.Position = UDim2.new(0, x, 0, z)
+                    dot.BackgroundColor3 = Settings.ESP.Colors[player:GetAttribute("Role")] or Settings.ESP.Colors.Innocent
+                    dot.BackgroundTransparency = 0
+                    dot.Image = ""
+                    dot.Parent = RadarFrame
+                end
+            end
+        end
+    end)
+end
+
+-- ==================== LOOP DE FUNÇÕES ====================
+-- Aimbot (simples)
+local function AimAt(target)
+    if not target or not target.Character or not target.Character:FindFirstChild("HumanoidRootPart") then return end
+    local targetPos = target.Character.HumanoidRootPart.Position
+    local camPos = Camera.CFrame.Position
+    local direction = (targetPos - camPos).unit
+    local newCFrame = CFrame.new(camPos, camPos + direction)
+    Camera.CFrame = Camera.CFrame:Lerp(newCFrame, Settings.Aimbot.Smoothness / 100)
+end
+
+-- Auto Collect
+local function AutoCollect()
+    for _, obj in pairs(Workspace:GetDescendants()) do
+        if obj:IsA("BasePart") and (obj.Name:find("Coin") or obj.Name:find("Knife")) then
+            local click = obj:FindFirstChildOfClass("ClickDetector")
+            if click then
+                click:FireClick()
+            end
+        end
+    end
+end
+
+-- Auto Reset (quando morrer)
+local function AutoReset()
+    if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("Humanoid") or LocalPlayer.Character.Humanoid.Health <= 0 then
+        -- Esperar respawn
+        wait(2)
+        -- Tentar reentrar? Simular clique em botão de reiniciar
+        local resetButton = game:GetService("StarterGui"):FindFirstChild("ResetButton") -- lugar comum
+        if resetButton then
+            resetButton:FireClick()
+        end
+    end
+end
+
+-- Anti-AFK
+local function AntiAFK()
+    if Settings.Movement.AntiAFK then
+        -- Simular movimento de mouse ou toque
+        VirtualInput:SendMouseButtonEvent(0, 0, 0, true, Enum.UserInputType.MouseButton1, 1)
+        wait(0.1)
+        VirtualInput:SendMouseButtonEvent(0, 0, 0, false, Enum.UserInputType.MouseButton1, 1)
+    end
+end
+
+-- Fly
+local function FlyLoop()
+    if Flying then
+        local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
+        if humanoid then
+            humanoid.PlatformStand = true
+            local bodyVelocity = Instance.new("BodyVelocity")
+            bodyVelocity.MaxForce = Vector3.new(1, 1, 1) * 100000
+            bodyVelocity.Velocity = Vector3.new(0, FlySpeed, 0)
+            bodyVelocity.Parent = LocalPlayer.Character.HumanoidRootPart
+            -- Controles (WASD) para movimentação no ar
+            -- Implementação simplificada
+        end
+    else
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+            LocalPlayer.Character.Humanoid.PlatformStand = false
+            for _, v in pairs(LocalPlayer.Character:GetDescendants()) do
+                if v:IsA("BodyVelocity") then v:Destroy() end
+            end
+        end
+    end
+end
+
+-- ==================== EXECUÇÃO PRINCIPAL ====================
+LoadSettings()
+Gui = CreateFloatingButton()
+MainMenu = CreateMainMenu()
+
+-- Aplicar velocidade inicial
+if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+    LocalPlayer.Character.Humanoid.WalkSpeed = Settings.Movement.Speed
+end
+
+-- Loop principal
+RunService.RenderStepped:Connect(function()
+    if Settings.ESP.Enabled and Settings.ESP.Players then
+        CreateESP()
+    end
+    if Settings.Aimbot.Enabled then
+        local target = nil
+        if Settings.Aimbot.Target == "Assassino" then
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player:GetAttribute("Role") == "Murderer" then
+                    target = player
+                    break
+                end
+            end
+        elseif Settings.Aimbot.Target == "Xerife" then
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player:GetAttribute("Role") == "Sheriff" then
+                    target = player
+                    break
+                end
+            end
+        elseif Settings.Aimbot.Target == "Inocente" then
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and not player:GetAttribute("Role") then
+                    target = player
+                    break
+                end
+            end
+        elseif Settings.Aimbot.Target == "Todos" then
+            local nearest = nil
+            local nearestDist = math.huge
+            for _, player in pairs(Players:GetPlayers()) do
+                if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                    local dist = (LocalPlayer.Character.HumanoidRootPart.Position - player.Character.HumanoidRootPart.Position).magnitude
+                    if dist < nearestDist then
+                        nearestDist = dist
+                        nearest = player
                     end
                 end
             end
+            target = nearest
         end
-    end
-end
-
-function Notify(title, message, duration)
-    duration = duration or 2
-    table.insert(NotificationQueue, { title = title, message = message, duration = duration, created = tick() })
-    -- A UI de notificações será atualizada no loop de render
-end
-
--- ================= CRIAR ELEMENTOS DE DESENHO (ESP, RADAR) =================
-local function CreateDrawingObjects(player)
-    if ESPObjects[player] then return end
-    local box = Drawing.new("Square")
-    box.Thickness = 2
-    box.Color = Settings.ESP.Players.Colors.Innocent
-    box.Visible = false
-    
-    local name = Drawing.new("Text")
-    name.Size = 14
-    name.Center = true
-    name.Outline = true
-    name.Color = box.Color
-    name.Visible = false
-    
-    local distance = Drawing.new("Text")
-    distance.Size = 12
-    distance.Center = true
-    distance.Outline = true
-    distance.Color = Color3.fromRGB(200,200,200)
-    distance.Visible = false
-    
-    local tracer = Drawing.new("Line")
-    tracer.Thickness = 1
-    tracer.Color = Settings.ESP.Tracers.Color
-    tracer.Visible = false
-    
-    ESPObjects[player] = { box = box, name = name, distance = distance, tracer = tracer }
-end
-
-local function UpdateESP()
-    if not Settings.ESP.Enabled then return end
-    local camera = workspace.CurrentCamera
-    local viewportSize = camera.ViewportSize
-    for player, objs in pairs(ESPObjects) do
-        if player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            local root = player.Character.HumanoidRootPart
-            local pos, onScreen = camera:WorldToViewportPoint(root.Position)
-            if onScreen then
-                -- Determinar cor baseada no papel
-                local role = player:GetAttribute("Role") or (player.Team and player.Team.Name) or ""
-                local color = Settings.ESP.Players.Colors.Innocent
-                if role == "Murderer" then
-                    color = Settings.ESP.Players.Colors.Murderer
-                elseif role == "Sheriff" then
-                    color = Settings.ESP.Players.Colors.Sheriff
-                end
-                
-                -- Caixa
-                if Settings.ESP.Players.ShowBoxes then
-                    local size = player.Character:GetExtentsSize()
-                    local width = size.X * 4
-                    local height = size.Y * 4
-                    local boxPos = Vector2.new(pos.X - width/2, pos.Y - height/2)
-                    objs.box.Size = Vector2.new(width, height)
-                    objs.box.Position = boxPos
-                    objs.box.Color = color
-                    objs.box.Visible = true
-                else
-                    objs.box.Visible = false
-                end
-                
-                -- Nome
-                if Settings.ESP.Players.ShowNames then
-                    objs.name.Text = player.Name
-                    objs.name.Position = Vector2.new(pos.X, pos.Y - 25)
-                    objs.name.Color = color
-                    objs.name.Visible = true
-                else
-                    objs.name.Visible = false
-                end
-                
-                -- Distância
-                if Settings.ESP.Players.ShowDistance then
-                    local dist = (LocalPlayer.Character.HumanoidRootPart.Position - root.Position).magnitude
-                    objs.distance.Text = string.format("%.1fm", dist)
-                    objs.distance.Position = Vector2.new(pos.X, pos.Y + 10)
-                    objs.distance.Visible = true
-                else
-                    objs.distance.Visible = false
-                end
-                
-                -- Tracer
-                if Settings.ESP.Tracers.Enabled then
-                    objs.tracer.From = Vector2.new(viewportSize.X/2, viewportSize.Y)
-                    objs.tracer.To = Vector2.new(pos.X, pos.Y)
-                    objs.tracer.Color = Settings.ESP.Tracers.Color
-                    objs.tracer.Visible = true
-                else
-                    objs.tracer.Visible = false
-                end
-            else
-                objs.box.Visible = false
-                objs.name.Visible = false
-                objs.distance.Visible = false
-                objs.tracer.Visible = false
-            end
-        else
-            objs.box.Visible = false
-            objs.name.Visible = false
-            objs.distance.Visible = false
-            objs.tracer.Visible = false
-        end
-    end
-end
-
-local function CreateESPForAll()
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer then
-            CreateDrawingObjects(player)
-        end
-    end
-end
-
--- ================= RADAR 2D =================
-local radarFrame = nil
-local radarPoints = {}
-local function CreateRadar()
-    if radarFrame then radarFrame:Destroy() end
-    if not Settings.ESP.Radar.Enabled then return end
-    
-    local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "NexusRadar"
-    screenGui.Parent = LocalPlayer.PlayerGui
-    
-    local size = Settings.ESP.Radar.Size
-    local position = Settings.ESP.Radar.Position
-    local posOffset = UDim2.new()
-    if position == "TopLeft" then
-        posOffset = UDim2.new(0, 10, 0, 10)
-    elseif position == "TopRight" then
-        posOffset = UDim2.new(1, -size-10, 0, 10)
-    elseif position == "BottomLeft" then
-        posOffset = UDim2.new(0, 10, 1, -size-10)
-    else -- BottomRight
-        posOffset = UDim2.new(1, -size-10, 1, -size-10)
-    end
-    
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(0, size, 0, size)
-    frame.Position = posOffset
-    frame.BackgroundColor3 = Color3.fromRGB(0,0,0)
-    frame.BackgroundTransparency = 0.5
-    frame.BorderSizePixel = 0
-    frame.Parent = screenGui
-    
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(1, 0)
-    corner.Parent = frame
-    
-    local center = Instance.new("Frame")
-    center.Size = UDim2.new(0, 4, 0, 4)
-    center.Position = UDim2.new(0.5, -2, 0.5, -2)
-    center.BackgroundColor3 = Color3.fromRGB(255,255,255)
-    center.BorderSizePixel = 0
-    center.Parent = frame
-    
-    local centerCorner = Instance.new("UICorner")
-    centerCorner.CornerRadius = UDim.new(1,0)
-    centerCorner.Parent = center
-    
-    radarFrame = frame
-end
-
-local function UpdateRadar()
-    if not Settings.ESP.Radar.Enabled or not radarFrame then return end
-    -- Limpar pontos antigos
-    for _, point in pairs(radarPoints) do
-        point:Destroy()
-    end
-    radarPoints = {}
-    
-    local centerX = radarFrame.AbsoluteSize.X / 2
-    local centerY = radarFrame.AbsoluteSize.Y / 2
-    local playerPos = LocalPlayer.Character and LocalPlayer.Character.HumanoidRootPart.Position
-    if not playerPos then return end
-    
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            local targetPos = player.Character.HumanoidRootPart.Position
-            local diff = targetPos - playerPos
-            local angle = math.atan2(diff.Z, diff.X)
-            local dist = diff.Magnitude
-            local scale = math.min(1, 100 / dist) -- escala máxima 100
-            local radius = (radarFrame.AbsoluteSize.X / 2) * scale
-            local x = centerX + radius * math.cos(angle)
-            local y = centerY + radius * math.sin(angle)
-            
-            local point = Instance.new("Frame")
-            point.Size = UDim2.new(0, 4, 0, 4)
-            point.Position = UDim2.new(0, x-2, 0, y-2)
-            point.BackgroundColor3 = Settings.ESP.Players.Colors.Innocent
-            local role = player:GetAttribute("Role") or (player.Team and player.Team.Name) or ""
-            if role == "Murderer" then
-                point.BackgroundColor3 = Settings.ESP.Players.Colors.Murderer
-            elseif role == "Sheriff" then
-                point.BackgroundColor3 = Settings.ESP.Players.Colors.Sheriff
-            end
-            point.BorderSizePixel = 0
-            point.Parent = radarFrame
-            
-            local pointCorner = Instance.new("UICorner")
-            pointCorner.CornerRadius = UDim.new(1,0)
-            pointCorner.Parent = point
-            
-            table.insert(radarPoints, point)
-        end
-    end
-end
-
--- ================= AIMBOT (Silent) =================
-local function GetTarget()
-    local camera = workspace.CurrentCamera
-    local mousePos = UserInputService:GetMouseLocation()
-    local target = nil
-    local closestDist = Settings.Aimbot.FOV.Radius
-    
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-            local role = player:GetAttribute("Role") or (player.Team and player.Team.Name) or ""
-            if Settings.Aimbot.Target == "Murderer" and role ~= "Murderer" then continue end
-            if Settings.Aimbot.Target == "Sheriff" and role ~= "Sheriff" then continue end
-            
-            local root = player.Character.HumanoidRootPart
-            local screenPos, onScreen = camera:WorldToViewportPoint(root.Position)
-            if onScreen then
-                local dist = (Vector2.new(screenPos.X, screenPos.Y) - mousePos).Magnitude
-                if dist < closestDist then
-                    closestDist = dist
-                    target = player
-                end
-            end
-        end
-    end
-    return target
-end
-
-local function AimAt(target)
-    if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
-        local targetPos = target.Character.HumanoidRootPart.Position
-        local camera = workspace.CurrentCamera
-        local lookVector = (targetPos - camera.CFrame.Position).unit
-        local newCFrame = CFrame.new(camera.CFrame.Position, camera.CFrame.Position + lookVector)
-        camera.CFrame = camera.CFrame:Lerp(newCFrame, Settings.Aimbot.Smoothness)
-    end
-end
-
-local function SilentAim(target)
-    -- Silent aim: modifica a direção do tiro sem mover a câmera
-    -- Isso geralmente é feito interceptando eventos remotos ou modificando o mouse
-    -- Para MM2, podemos simular alterando o ângulo de disparo no momento do click
-    -- Aqui implementamos uma versão simples: ao atirar, redireciona o tiro para o alvo
-    if target and target.Character and target.Character:FindFirstChild("HumanoidRootPart") then
-        -- Simular um evento de tiro (exemplo: chamar função remota)
-        -- Na prática, você precisaria encontrar a função de atirar no jogo
-        -- Vamos deixar como placeholder
-        -- fireclickdetector ou invocar remoto
-    end
-end
-
--- ================= AUTO FARM =================
-local function AutoCollect()
-    if not Settings.AutoFarm.Enabled then return end
-    for _, obj in pairs(Workspace:GetDescendants()) do
-        if obj:IsA("BasePart") then
-            if Settings.AutoFarm.CollectCoins and obj.Name:find("Coin") then
-                local click = obj:FindFirstChildOfClass("ClickDetector")
-                if click then
-                    fireclickdetector(click)
-                end
-            end
-            if Settings.AutoFarm.CollectKnife and obj.Name:find("Knife") then
-                local click = obj:FindFirstChildOfClass("ClickDetector")
-                if click then
-                    fireclickdetector(click)
-                end
-            end
-        end
-    end
-end
-
--- ================= MOVIMENTAÇÃO =================
-local function StartFly()
-    if Flying then return end
-    Flying = true
-    local char = LocalPlayer.Character
-    local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-    if humanoid then
-        humanoid.PlatformStand = true
-    end
-    local bodyVel = Instance.new("BodyVelocity")
-    bodyVel.MaxForce = Vector3.new(1e9, 1e9, 1e9)
-    bodyVel.Velocity = Vector3.new(0,0,0)
-    bodyVel.Parent = char.HumanoidRootPart
-    
-    local connection
-    connection = RunService.RenderStepped:Connect(function()
-        if not Flying then
-            connection:Disconnect()
-            bodyVel:Destroy()
-            if humanoid then humanoid.PlatformStand = false end
-            return
-        end
-        local move = Vector3.new(
-            (UserInputService:IsKeyDown(Enum.KeyCode.D) and 1 or 0) - (UserInputService:IsKeyDown(Enum.KeyCode.A) and 1 or 0),
-            (UserInputService:IsKeyDown(Enum.KeyCode.Space) and 1 or 0) - (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) and 1 or 0),
-            (UserInputService:IsKeyDown(Enum.KeyCode.S) and 1 or 0) - (UserInputService:IsKeyDown(Enum.KeyCode.W) and 1 or 0)
-        )
-        if move.Magnitude > 0 then
-            move = move.unit
-        end
-        local camera = workspace.CurrentCamera
-        local forward = camera.CFrame.LookVector
-        local right = camera.CFrame.RightVector
-        local vel = (right * move.X + Vector3.new(0, move.Y, 0) + forward * move.Z) * 50
-        bodyVel.Velocity = vel
-    end)
-end
-
-local function StopFly()
-    Flying = false
-end
-
-local function NoclipToggle()
-    Noclip = not Noclip
-    if Noclip then
-        local char = LocalPlayer.Character
-        for _, part in pairs(char:GetDescendants()) do
-            if part:IsA("BasePart") then
-                part.CanCollide = false
-            end
-        end
-        -- Atualizar quando o personagem for atualizado
-        local connection
-        connection = LocalPlayer.CharacterAdded:Connect(function(newChar)
-            for _, part in pairs(newChar:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    part.CanCollide = false
-                end
-            end
-        end)
-    else
-        -- Restaurar colisão
-        local char = LocalPlayer.Character
-        if char then
-            for _, part in pairs(char:GetDescendants()) do
-                if part:IsA("BasePart") then
-                    part.CanCollide = true
-                end
-            end
-        end
-    end
-end
-
-local function SpeedHack()
-    if Settings.Movement.SpeedHack.Enabled then
-        local char = LocalPlayer.Character
-        local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-        if humanoid then
-            humanoid.WalkSpeed = Settings.Movement.SpeedHack.Speed
-        end
-    else
-        local char = LocalPlayer.Character
-        local humanoid = char and char:FindFirstChildOfClass("Humanoid")
-        if humanoid then
-            humanoid.WalkSpeed = 16 -- velocidade padrão
-        end
-    end
-end
-
-local function AntiAFK()
-    if not Settings.Movement.AntiAFK then return end
-    -- Simula movimento leve periodicamente
-    local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Humanoid")
-    if humanoid then
-        humanoid:Move(Vector3.new(0,0,0), true)
-    end
-end
-
--- ================= COMBATE =================
-local function KillAll()
-    if not Settings.Combat.KillAll then return end
-    -- Buscar todos os jogadores e simular morte
-    for _, player in pairs(Players:GetPlayers()) do
-        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Humanoid") then
-            player.Character.Humanoid.Health = 0
-        end
-    end
-end
-
-local function InstantWin()
-    if not Settings.Combat.InstantWin then return end
-    -- MM2: vencer a partida é disparar um evento remoto (exemplo)
-    -- Precisamos encontrar a função que envia vitória
-    -- Placeholder: enviar evento de "round win"
-    local remote = ReplicatedStorage:FindFirstChild("RoundWin") or ReplicatedStorage:FindFirstChild("GameWin")
-    if remote then
-        remote:FireServer()
-    end
-end
-
-local function AutoParry()
-    if not Settings.Combat.AutoParry then return end
-    -- Simular bloqueio automático (se o jogo tiver mecânica de parry)
-    -- Geralmente é um evento remoto de "block"
-end
-
-local function NoRecoil()
-    -- Remover recoil de armas (ajustar propriedades do mouse ou da arma)
-    -- Placeholder
-end
-
--- ================= PROTEÇÃO =================
-local function RandomDelay()
-    if Settings.Protection.RandomDelay then
-        local delay = Settings.Protection.RandomDelay
-        local waitTime = math.random(delay*1000, delay*2000)/1000
-        task.wait(waitTime)
-    end
-end
-
-local function AntiBan()
-    if not Settings.Protection.AntiBan then return end
-    -- Ofuscação de chamadas remotas, adicionar atraso aleatório entre ações
-    -- Hook de funções sensíveis (exemplo)
-    -- Vamos apenas simular com RandomDelay
-end
-
--- ================= GUI (INTERFACE) =================
-local screenGui = Instance.new("ScreenGui")
-screenGui.Name = "NexusPremium"
-screenGui.Parent = LocalPlayer.PlayerGui
-
--- Bolinha flutuante
-local floatingButton = Instance.new("ImageButton")
-floatingButton.Size = UDim2.new(0, 60, 0, 60)
-floatingButton.Position = UDim2.new(0, 20, 0, 100)
-floatingButton.BackgroundColor3 = Settings.Misc.PrimaryColor
-floatingButton.BackgroundTransparency = 0.3
-floatingButton.Image = "rbxasset://textures/ui/GuiImagePlaceholder.png" -- substituir por ícone de faca
-floatingButton.ImageColor3 = Color3.fromRGB(255,255,255)
-floatingButton.Parent = screenGui
-
-local cornerBtn = Instance.new("UICorner")
-cornerBtn.CornerRadius = UDim.new(1, 0)
-cornerBtn.Parent = floatingButton
-
--- Arrastar bolinha
-local dragging = false
-local dragStart, startPos
-floatingButton.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = true
-        dragStart = input.Position
-        startPos = floatingButton.Position
-    end
-end)
-floatingButton.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-        dragging = false
-    end
-end)
-floatingButton.InputChanged:Connect(function(input)
-    if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-        local delta = input.Position - dragStart
-        floatingButton.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
-    end
-end)
-
--- Menu principal
-local mainFrame = Instance.new("Frame")
-mainFrame.Size = UDim2.new(0, 450, 0, 550)
-mainFrame.Position = UDim2.new(0.5, -225, 0.5, -275)
-mainFrame.BackgroundColor3 = Color3.fromRGB(20, 20, 30)
-mainFrame.BackgroundTransparency = 0.1
-mainFrame.Visible = false
-mainFrame.Parent = screenGui
-
-local mainCorner = Instance.new("UICorner")
-mainCorner.CornerRadius = UDim.new(0, 12)
-mainCorner.Parent = mainFrame
-
-local shadow = Instance.new("UIShadow")
-shadow.Parent = mainFrame
-
--- Categorias laterais
-local categoriesFrame = Instance.new("Frame")
-categoriesFrame.Size = UDim2.new(0, 140, 1, 0)
-categoriesFrame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
-categoriesFrame.BackgroundTransparency = 0.5
-categoriesFrame.Parent = mainFrame
-
-local categories = {
-    { name = "Aimbot", icon = "🎯" },
-    { name = "ESP", icon = "👁️" },
-    { name = "Auto Farm", icon = "🌾" },
-    { name = "Movimentação", icon = "🏃" },
-    { name = "Combate", icon = "⚔️" },
-    { name = "Proteção", icon = "🛡️" },
-    { name = "Misc", icon = "⚙️" },
-    { name = "Configurações", icon = "🔧" }
-}
-local categoryButtons = {}
-for i, cat in ipairs(categories) do
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, 0, 0, 45)
-    btn.Position = UDim2.new(0, 0, 0, (i-1)*50)
-    btn.Text = cat.icon .. "  " .. cat.name
-    btn.TextColor3 = Settings.UI and Settings.UI.TextColor or Color3.fromRGB(255,255,255)
-    btn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
-    btn.BackgroundTransparency = 0.5
-    btn.TextXAlignment = Enum.TextXAlignment.Left
-    btn.Font = Enum.Font.Gotham
-    btn.TextSize = 14
-    btn.Parent = categoriesFrame
-    
-    local btnCorner = Instance.new("UICorner")
-    btnCorner.CornerRadius = UDim.new(0, 8)
-    btnCorner.Parent = btn
-    
-    btn.MouseButton1Click:Connect(function()
-        CurrentCategory = cat.name
-        UpdateContentFrame()
-    end)
-    categoryButtons[cat.name] = btn
-end
-
--- Área de conteúdo
-local contentFrame = Instance.new("Frame")
-contentFrame.Size = UDim2.new(1, -150, 1, -20)
-contentFrame.Position = UDim2.new(0, 145, 0, 10)
-contentFrame.BackgroundTransparency = 1
-contentFrame.Parent = mainFrame
-
--- Cabeçalho com imagem de perfil
-local profileImage = Instance.new("ImageLabel")
-profileImage.Size = UDim2.new(0, 50, 0, 50)
-profileImage.Position = UDim2.new(1, -60, 0, 10)
-profileImage.Image = "https://play-lh.googleusercontent.com/5jcAEbmAQ-4XAYIlHGl_ZW9X9GJlTImrA4EBYBztutHPou2W3DB-w2FR7oOOE22_FPSv=w240-h480-rw"
-profileImage.BackgroundTransparency = 1
-profileImage.Parent = mainFrame
-
-local profileCorner = Instance.new("UICorner")
-profileCorner.CornerRadius = UDim.new(1, 0)
-profileCorner.Parent = profileImage
-
--- Função para criar elementos UI
-function CreateToggle(parent, text, defaultValue, callback)
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, -20, 0, 40)
-    frame.BackgroundTransparency = 1
-    frame.Parent = parent
-    
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0.6, 0, 1, 0)
-    label.Text = text
-    label.TextColor3 = Color3.fromRGB(255,255,255)
-    label.BackgroundTransparency = 1
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = frame
-    
-    local toggleBg = Instance.new("Frame")
-    toggleBg.Size = UDim2.new(0, 50, 0, 24)
-    toggleBg.Position = UDim2.new(1, -60, 0.5, -12)
-    toggleBg.BackgroundColor3 = defaultValue and Color3.fromRGB(0,200,0) or Color3.fromRGB(80,80,100)
-    toggleBg.BorderSizePixel = 0
-    toggleBg.Parent = frame
-    
-    local toggleCorner = Instance.new("UICorner")
-    toggleCorner.CornerRadius = UDim.new(1,0)
-    toggleCorner.Parent = toggleBg
-    
-    local knob = Instance.new("Frame")
-    knob.Size = UDim2.new(0, 20, 0, 20)
-    knob.Position = defaultValue and UDim2.new(1, -22, 0.5, -10) or UDim2.new(0, 2, 0.5, -10)
-    knob.BackgroundColor3 = Color3.fromRGB(255,255,255)
-    knob.BorderSizePixel = 0
-    knob.Parent = toggleBg
-    
-    local knobCorner = Instance.new("UICorner")
-    knobCorner.CornerRadius = UDim.new(1,0)
-    knobCorner.Parent = knob
-    
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1,0,1,0)
-    btn.BackgroundTransparency = 1
-    btn.Text = ""
-    btn.Parent = frame
-    
-    local active = defaultValue
-    btn.MouseButton1Click:Connect(function()
-        active = not active
-        toggleBg.BackgroundColor3 = active and Color3.fromRGB(0,200,0) or Color3.fromRGB(80,80,100)
-        knob.Position = active and UDim2.new(1, -22, 0.5, -10) or UDim2.new(0, 2, 0.5, -10)
-        callback(active)
-    end)
-    
-    return frame
-end
-
-function CreateSlider(parent, text, min, max, defaultValue, callback)
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, -20, 0, 50)
-    frame.BackgroundTransparency = 1
-    frame.Parent = parent
-    
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1,0,0,20)
-    label.Text = text .. ": " .. tostring(defaultValue)
-    label.TextColor3 = Color3.fromRGB(255,255,255)
-    label.BackgroundTransparency = 1
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = frame
-    
-    local sliderBg = Instance.new("Frame")
-    sliderBg.Size = UDim2.new(1,0,0,4)
-    sliderBg.Position = UDim2.new(0,0,0,30)
-    sliderBg.BackgroundColor3 = Color3.fromRGB(80,80,100)
-    sliderBg.BorderSizePixel = 0
-    sliderBg.Parent = frame
-    
-    local fill = Instance.new("Frame")
-    fill.Size = UDim2.new((defaultValue - min)/(max - min), 0, 1, 0)
-    fill.BackgroundColor3 = Settings.Misc.PrimaryColor
-    fill.BorderSizePixel = 0
-    fill.Parent = sliderBg
-    
-    local knob = Instance.new("Frame")
-    knob.Size = UDim2.new(0, 12, 0, 12)
-    knob.Position = UDim2.new((defaultValue - min)/(max - min), -6, 0.5, -6)
-    knob.BackgroundColor3 = Settings.Misc.PrimaryColor
-    knob.BorderSizePixel = 0
-    knob.Parent = sliderBg
-    
-    local knobCorner = Instance.new("UICorner")
-    knobCorner.CornerRadius = UDim.new(1,0)
-    knobCorner.Parent = knob
-    
-    local valueLabel = Instance.new("TextLabel")
-    valueLabel.Size = UDim2.new(0,40,0,20)
-    valueLabel.Position = UDim2.new(1, -50, 0, 30)
-    valueLabel.Text = tostring(defaultValue)
-    valueLabel.TextColor3 = Color3.fromRGB(255,255,255)
-    valueLabel.BackgroundTransparency = 1
-    valueLabel.Parent = frame
-    
-    local dragging = false
-    knob.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = true
-        end
-    end)
-    knob.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 or input.UserInputType == Enum.UserInputType.Touch then
-            dragging = false
-        end
-    end)
-    knob.InputChanged:Connect(function(input)
-        if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement or input.UserInputType == Enum.UserInputType.Touch) then
-            local pos = input.Position.X - sliderBg.AbsolutePosition.X
-            local percent = math.clamp(pos / sliderBg.AbsoluteSize.X, 0, 1)
-            local value = min + percent * (max - min)
-            fill.Size = UDim2.new(percent, 0, 1, 0)
-            knob.Position = UDim2.new(percent, -6, 0.5, -6)
-            valueLabel.Text = string.format("%.2f", value)
-            callback(value)
-        end
-    end)
-    
-    return frame
-end
-
-function CreateButton(parent, text, callback)
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1, -20, 0, 40)
-    btn.Text = text
-    btn.TextColor3 = Color3.fromRGB(255,255,255)
-    btn.BackgroundColor3 = Color3.fromRGB(30,30,40)
-    btn.BorderSizePixel = 0
-    btn.Parent = parent
-    
-    local btnCorner = Instance.new("UICorner")
-    btnCorner.CornerRadius = UDim.new(0, 8)
-    btnCorner.Parent = btn
-    
-    btn.MouseButton1Click:Connect(callback)
-    return btn
-end
-
-function CreateDropdown(parent, text, options, defaultValue, callback)
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, -20, 0, 50)
-    frame.BackgroundTransparency = 1
-    frame.Parent = parent
-    
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(1,0,0,20)
-    label.Text = text
-    label.TextColor3 = Color3.fromRGB(255,255,255)
-    label.BackgroundTransparency = 1
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = frame
-    
-    local dropdownBtn = Instance.new("TextButton")
-    dropdownBtn.Size = UDim2.new(1,0,0,30)
-    dropdownBtn.Position = UDim2.new(0,0,0,25)
-    dropdownBtn.Text = defaultValue
-    dropdownBtn.TextColor3 = Color3.fromRGB(255,255,255)
-    dropdownBtn.BackgroundColor3 = Color3.fromRGB(30,30,40)
-    dropdownBtn.BorderSizePixel = 0
-    dropdownBtn.Parent = frame
-    
-    local btnCorner = Instance.new("UICorner")
-    btnCorner.CornerRadius = UDim.new(0,8)
-    btnCorner.Parent = dropdownBtn
-    
-    local dropdownList = Instance.new("Frame")
-    dropdownList.Size = UDim2.new(1,0,0,0)
-    dropdownList.Position = UDim2.new(0,0,0,55)
-    dropdownList.BackgroundColor3 = Color3.fromRGB(30,30,40)
-    dropdownList.ClipsDescendants = true
-    dropdownList.Visible = false
-    dropdownList.Parent = frame
-    
-    local listCorner = Instance.new("UICorner")
-    listCorner.CornerRadius = UDim.new(0,8)
-    listCorner.Parent = dropdownList
-    
-    local optButtons = {}
-    for i, opt in ipairs(options) do
-        local optBtn = Instance.new("TextButton")
-        optBtn.Size = UDim2.new(1,0,0,30)
-        optBtn.Position = UDim2.new(0,0,0,(i-1)*30)
-        optBtn.Text = opt
-        optBtn.TextColor3 = Color3.fromRGB(255,255,255)
-        optBtn.BackgroundColor3 = Color3.fromRGB(40,40,50)
-        optBtn.BorderSizePixel = 0
-        optBtn.Parent = dropdownList
-        
-        local optCorner = Instance.new("UICorner")
-        optCorner.CornerRadius = UDim.new(0,6)
-        optCorner.Parent = optBtn
-        
-        optBtn.MouseButton1Click:Connect(function()
-            dropdownBtn.Text = opt
-            dropdownList.Visible = false
-            callback(opt)
-        end)
-        optButtons[opt] = optBtn
-    end
-    
-    dropdownBtn.MouseButton1Click:Connect(function()
-        dropdownList.Visible = not dropdownList.Visible
-        if dropdownList.Visible then
-            dropdownList.Size = UDim2.new(1,0,0,#options * 30)
-        else
-            dropdownList.Size = UDim2.new(1,0,0,0)
-        end
-    end)
-    
-    return frame
-end
-
-function CreateColorPicker(parent, text, defaultColor, callback)
-    -- Placeholder para seletor de cor
-    local frame = Instance.new("Frame")
-    frame.Size = UDim2.new(1, -20, 0, 40)
-    frame.BackgroundTransparency = 1
-    frame.Parent = parent
-    
-    local label = Instance.new("TextLabel")
-    label.Size = UDim2.new(0.6,0,1,0)
-    label.Text = text
-    label.TextColor3 = Color3.fromRGB(255,255,255)
-    label.BackgroundTransparency = 1
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Parent = frame
-    
-    local colorBox = Instance.new("Frame")
-    colorBox.Size = UDim2.new(0, 30, 0, 30)
-    colorBox.Position = UDim2.new(1, -40, 0.5, -15)
-    colorBox.BackgroundColor3 = defaultColor
-    colorBox.BorderSizePixel = 0
-    colorBox.Parent = frame
-    
-    local boxCorner = Instance.new("UICorner")
-    boxCorner.CornerRadius = UDim.new(0, 6)
-    boxCorner.Parent = colorBox
-    
-    local btn = Instance.new("TextButton")
-    btn.Size = UDim2.new(1,0,1,0)
-    btn.BackgroundTransparency = 1
-    btn.Text = ""
-    btn.Parent = frame
-    
-    btn.MouseButton1Click:Connect(function()
-        -- Simples seletor de cores (pode ser expandido)
-        local newColor = Color3.fromRGB(math.random(0,255), math.random(0,255), math.random(0,255))
-        colorBox.BackgroundColor3 = newColor
-        callback(newColor)
-    end)
-    
-    return frame
-end
-
--- Atualizar conteúdo da categoria selecionada
-local function UpdateContentFrame()
-    for _, child in pairs(contentFrame:GetChildren()) do
-        child:Destroy()
-    end
-    
-    local y = 0
-    if CurrentCategory == "Aimbot" then
-        local toggle = CreateToggle(contentFrame, "Aimbot Ativado", Settings.Aimbot.Enabled, function(val)
-            Settings.Aimbot.Enabled = val
-            Notify("Aimbot", val and "Ativado" or "Desativado")
-            SaveSettings()
-        end)
-        toggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local silentToggle = CreateToggle(contentFrame, "Silent Aim", Settings.Aimbot.Silent, function(val)
-            Settings.Aimbot.Silent = val
-            SaveSettings()
-        end)
-        silentToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local targetDropdown = CreateDropdown(contentFrame, "Alvo", {"Murderer", "Sheriff", "Any"}, Settings.Aimbot.Target, function(val)
-            Settings.Aimbot.Target = val
-            SaveSettings()
-        end)
-        targetDropdown.Position = UDim2.new(0,0,0,y)
-        y = y + 60
-        
-        local smoothSlider = CreateSlider(contentFrame, "Suavidade", 0, 1, Settings.Aimbot.Smoothness, function(val)
-            Settings.Aimbot.Smoothness = val
-            SaveSettings()
-        end)
-        smoothSlider.Position = UDim2.new(0,0,0,y)
-        y = y + 60
-        
-        local distSlider = CreateSlider(contentFrame, "Distância Máxima", 0, 200, Settings.Aimbot.MaxDistance, function(val)
-            Settings.Aimbot.MaxDistance = val
-            SaveSettings()
-        end)
-        distSlider.Position = UDim2.new(0,0,0,y)
-        y = y + 60
-        
-        local fovToggle = CreateToggle(contentFrame, "Mostrar Campo de Mira", Settings.Aimbot.FOV.Enabled, function(val)
-            Settings.Aimbot.FOV.Enabled = val
-            SaveSettings()
-        end)
-        fovToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local fovRadius = CreateSlider(contentFrame, "Raio do Campo", 50, 300, Settings.Aimbot.FOV.Radius, function(val)
-            Settings.Aimbot.FOV.Radius = val
-            SaveSettings()
-        end)
-        fovRadius.Position = UDim2.new(0,0,0,y)
-        
-    elseif CurrentCategory == "ESP" then
-        local espToggle = CreateToggle(contentFrame, "ESP Ativado", Settings.ESP.Enabled, function(val)
-            Settings.ESP.Enabled = val
-            if val then CreateESPForAll() else
-                for _, objs in pairs(ESPObjects) do
-                    if objs.box then objs.box.Visible = false end
-                    if objs.name then objs.name.Visible = false end
-                    if objs.distance then objs.distance.Visible = false end
-                    if objs.tracer then objs.tracer.Visible = false end
-                end
-            end
-            SaveSettings()
-        end)
-        espToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local playerToggle = CreateToggle(contentFrame, "ESP de Jogadores", Settings.ESP.Players.Enabled, function(val)
-            Settings.ESP.Players.Enabled = val
-            SaveSettings()
-        end)
-        playerToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local boxToggle = CreateToggle(contentFrame, "Caixas", Settings.ESP.Players.ShowBoxes, function(val)
-            Settings.ESP.Players.ShowBoxes = val
-            SaveSettings()
-        end)
-        boxToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local nameToggle = CreateToggle(contentFrame, "Nomes", Settings.ESP.Players.ShowNames, function(val)
-            Settings.ESP.Players.ShowNames = val
-            SaveSettings()
-        end)
-        nameToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local distToggle = CreateToggle(contentFrame, "Distância", Settings.ESP.Players.ShowDistance, function(val)
-            Settings.ESP.Players.ShowDistance = val
-            SaveSettings()
-        end)
-        distToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local tracerToggle = CreateToggle(contentFrame, "Traçadores", Settings.ESP.Tracers.Enabled, function(val)
-            Settings.ESP.Tracers.Enabled = val
-            SaveSettings()
-        end)
-        tracerToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local radarToggle = CreateToggle(contentFrame, "Radar 2D", Settings.ESP.Radar.Enabled, function(val)
-            Settings.ESP.Radar.Enabled = val
-            if val then CreateRadar() else if radarFrame then radarFrame:Destroy() end end
-            SaveSettings()
-        end)
-        radarToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local radarPosDropdown = CreateDropdown(contentFrame, "Posição do Radar", {"TopLeft","TopRight","BottomLeft","BottomRight"}, Settings.ESP.Radar.Position, function(val)
-            Settings.ESP.Radar.Position = val
-            if Settings.ESP.Radar.Enabled then CreateRadar() end
-            SaveSettings()
-        end)
-        radarPosDropdown.Position = UDim2.new(0,0,0,y)
-        
-    elseif CurrentCategory == "Auto Farm" then
-        local farmToggle = CreateToggle(contentFrame, "Auto Farm Ativado", Settings.AutoFarm.Enabled, function(val)
-            Settings.AutoFarm.Enabled = val
-            Notify("Auto Farm", val and "Iniciado" or "Parado")
-            SaveSettings()
-        end)
-        farmToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local coinsToggle = CreateToggle(contentFrame, "Coletar Moedas", Settings.AutoFarm.CollectCoins, function(val)
-            Settings.AutoFarm.CollectCoins = val
-            SaveSettings()
-        end)
-        coinsToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local knifeToggle = CreateToggle(contentFrame, "Coletar Faca", Settings.AutoFarm.CollectKnife, function(val)
-            Settings.AutoFarm.CollectKnife = val
-            SaveSettings()
-        end)
-        knifeToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local resetToggle = CreateToggle(contentFrame, "Auto Reset", Settings.AutoFarm.AutoReset, function(val)
-            Settings.AutoFarm.AutoReset = val
-            SaveSettings()
-        end)
-        resetToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local playToggle = CreateToggle(contentFrame, "Auto Play", Settings.AutoFarm.AutoPlay, function(val)
-            Settings.AutoFarm.AutoPlay = val
-            SaveSettings()
-        end)
-        playToggle.Position = UDim2.new(0,0,0,y)
-        
-    elseif CurrentCategory == "Movimentação" then
-        local flyToggle = CreateToggle(contentFrame, "Fly", Settings.Movement.Fly, function(val)
-            Settings.Movement.Fly = val
-            if val then StartFly() else StopFly() end
-            SaveSettings()
-        end)
-        flyToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local noclipToggle = CreateToggle(contentFrame, "Noclip", Settings.Movement.Noclip, function(val)
-            Settings.Movement.Noclip = val
-            NoclipToggle()
-            SaveSettings()
-        end)
-        noclipToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local speedToggle = CreateToggle(contentFrame, "Speed Hack", Settings.Movement.SpeedHack.Enabled, function(val)
-            Settings.Movement.SpeedHack.Enabled = val
-            SpeedHack()
-            SaveSettings()
-        end)
-        speedToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local speedSlider = CreateSlider(contentFrame, "Velocidade", 16, 100, Settings.Movement.SpeedHack.Speed, function(val)
-            Settings.Movement.SpeedHack.Speed = val
-            if Settings.Movement.SpeedHack.Enabled then SpeedHack() end
-            SaveSettings()
-        end)
-        speedSlider.Position = UDim2.new(0,0,0,y)
-        y = y + 60
-        
-        local teleportToggle = CreateToggle(contentFrame, "Teletransporte", Settings.Movement.Teleport.Enabled, function(val)
-            Settings.Movement.Teleport.Enabled = val
-            SaveSettings()
-        end)
-        teleportToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local teleportTarget = CreateDropdown(contentFrame, "Destino", {"Items", "Players", "Coordinates"}, Settings.Movement.Teleport.Target, function(val)
-            Settings.Movement.Teleport.Target = val
-            SaveSettings()
-        end)
-        teleportTarget.Position = UDim2.new(0,0,0,y)
-        y = y + 60
-        
-        local antiAFKToggle = CreateToggle(contentFrame, "Anti-AFK", Settings.Movement.AntiAFK, function(val)
-            Settings.Movement.AntiAFK = val
-            SaveSettings()
-        end)
-        antiAFKToggle.Position = UDim2.new(0,0,0,y)
-        
-    elseif CurrentCategory == "Combate" then
-        local killAllBtn = CreateButton(contentFrame, "Kill All", function()
-            KillAll()
-            Notify("Combate", "Kill All executado")
-        end)
-        killAllBtn.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local instantWinBtn = CreateButton(contentFrame, "Instant Win", function()
-            InstantWin()
-            Notify("Combate", "Vitória instantânea ativada")
-        end)
-        instantWinBtn.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local autoParryToggle = CreateToggle(contentFrame, "Auto Parry", Settings.Combat.AutoParry, function(val)
-            Settings.Combat.AutoParry = val
-            SaveSettings()
-        end)
-        autoParryToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local noRecoilToggle = CreateToggle(contentFrame, "No Recoil", Settings.Combat.NoRecoil, function(val)
-            Settings.Combat.NoRecoil = val
-            SaveSettings()
-        end)
-        noRecoilToggle.Position = UDim2.new(0,0,0,y)
-        
-    elseif CurrentCategory == "Proteção" then
-        local antiBanToggle = CreateToggle(contentFrame, "Anti-Ban", Settings.Protection.AntiBan, function(val)
-            Settings.Protection.AntiBan = val
-            SaveSettings()
-        end)
-        antiBanToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local delaySlider = CreateSlider(contentFrame, "Atraso Aleatório (s)", 0, 1, Settings.Protection.RandomDelay, function(val)
-            Settings.Protection.RandomDelay = val
-            SaveSettings()
-        end)
-        delaySlider.Position = UDim2.new(0,0,0,y)
-        y = y + 60
-        
-        local webhookInput = Instance.new("TextBox")
-        webhookInput.Size = UDim2.new(1, -20, 0, 30)
-        webhookInput.Position = UDim2.new(0, 10, 0, y)
-        webhookInput.PlaceholderText = "Webhook URL"
-        webhookInput.Text = Settings.Protection.Webhook
-        webhookInput.TextColor3 = Color3.fromRGB(255,255,255)
-        webhookInput.BackgroundColor3 = Color3.fromRGB(30,30,40)
-        webhookInput.BorderSizePixel = 0
-        webhookInput.Parent = contentFrame
-        local webCorner = Instance.new("UICorner")
-        webCorner.CornerRadius = UDim.new(0,6)
-        webCorner.Parent = webhookInput
-        webhookInput.FocusLost:Connect(function()
-            Settings.Protection.Webhook = webhookInput.Text
-            SaveSettings()
-        end)
-        
-    elseif CurrentCategory == "Misc" then
-        local autoBuyToggle = CreateToggle(contentFrame, "Auto Buy", Settings.Misc.AutoBuy, function(val)
-            Settings.Misc.AutoBuy = val
-            SaveSettings()
-        end)
-        autoBuyToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local stealthToggle = CreateToggle(contentFrame, "Stealth Mode", Settings.Misc.StealthMode, function(val)
-            Settings.Misc.StealthMode = val
-            if val then
-                -- Ocultar elementos da GUI? Talvez diminuir transparência
-            end
-            SaveSettings()
-        end)
-        stealthToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local soundToggle = CreateToggle(contentFrame, "Efeitos Sonoros", Settings.Misc.SoundEffects, function(val)
-            Settings.Misc.SoundEffects = val
-            SaveSettings()
-        end)
-        soundToggle.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local colorPicker = CreateColorPicker(contentFrame, "Cor Primária", Settings.Misc.PrimaryColor, function(val)
-            Settings.Misc.PrimaryColor = val
-            floatingButton.BackgroundColor3 = val
-            SaveSettings()
-        end)
-        colorPicker.Position = UDim2.new(0,0,0,y)
-        
-    elseif CurrentCategory == "Configurações" then
-        local saveBtn = CreateButton(contentFrame, "Salvar Configurações", function()
-            SaveSettings()
-            Notify("Configurações", "Salvas com sucesso")
-        end)
-        saveBtn.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local loadBtn = CreateButton(contentFrame, "Carregar Configurações", function()
-            LoadSettings()
-            Notify("Configurações", "Carregadas")
-            -- Recriar GUI para refletir alterações? (simplesmente recarregar script é melhor)
-        end)
-        loadBtn.Position = UDim2.new(0,0,0,y)
-        y = y + 50
-        
-        local resetBtn = CreateButton(contentFrame, "Resetar Configurações", function()
-            -- Resetar valores padrão
-            -- (redefinir Settings)
-            Notify("Configurações", "Resetadas para padrão")
-        end)
-        resetBtn.Position = UDim2.new(0,0,0,y)
-    end
-end
-
--- ================= LOOP PRINCIPAL =================
-LoadSettings()
-CreateESPForAll()
-if Settings.ESP.Radar.Enabled then CreateRadar() end
-
--- Loop de atualização em tempo real
-RunService.RenderStepped:Connect(function()
-    -- ESP
-    if Settings.ESP.Enabled then
-        UpdateESP()
-        if Settings.ESP.Radar.Enabled then UpdateRadar() end
-    end
-    
-    -- Aimbot (com FOV desenhado)
-    if Settings.Aimbot.Enabled then
-        local target = GetTarget()
         if target then
-            if Settings.Aimbot.Silent then
-                SilentAim(target)
-            else
-                AimAt(target)
-            end
-        end
-        -- Desenhar círculo FOV
-        if Settings.Aimbot.FOV.Enabled then
-            -- Desenhar círculo no centro da tela (simulação, seria melhor com Drawing)
+            AimAt(target)
         end
     end
-    
-    -- Auto Farm
-    if Settings.AutoFarm.Enabled then
+    if Settings.AutoFarm.Collect then
         AutoCollect()
     end
-    
-    -- Anti-AFK
+    if Settings.AutoFarm.Reset then
+        AutoReset()
+    end
     if Settings.Movement.AntiAFK then
         AntiAFK()
     end
-    
-    -- Velocidade
-    if Settings.Movement.SpeedHack.Enabled then
-        SpeedHack()
-    else
-        local char = LocalPlayer.Character
-        local hum = char and char:FindFirstChildOfClass("Humanoid")
-        if hum and hum.WalkSpeed ~= 16 then
-            hum.WalkSpeed = 16
+    if Settings.Movement.Fly then
+        FlyLoop()
+    end
+    -- Auto Play (simples)
+    if Settings.AutoFarm.AutoPlay then
+        -- Pular round automaticamente (detectar fim)
+        local roundEnded = false -- implementar
+        if roundEnded then
+            -- Simular clique no botão de próximo round
         end
     end
-    
-    -- Notificações (simples)
-    for i, notif in ipairs(NotificationQueue) do
-        if tick() - notif.created > notif.duration then
-            table.remove(NotificationQueue, i)
-        else
-            -- Exibir na tela (usar StarterGui:SetCore ou criar uma UI de notificação)
-        end
+    -- Auto Parry (defesa automática)
+    if Settings.Combat.AutoParry then
+        -- Detectar quando alguém estiver perto e bloquear
     end
 end)
 
--- Atualizar ao adicionar novos jogadores
-Players.PlayerAdded:Connect(function(player)
-    if player ~= LocalPlayer then
-        CreateDrawingObjects(player)
-    end
-end)
-
-Players.PlayerRemoving:Connect(function(player)
-    if ESPObjects[player] then
-        ESPObjects[player].box:Remove()
-        ESPObjects[player].name:Remove()
-        ESPObjects[player].distance:Remove()
-        ESPObjects[player].tracer:Remove()
-        ESPObjects[player] = nil
-    end
-end)
-
--- Abrir/fechar menu ao clicar na bolinha
-floatingButton.MouseButton1Click:Connect(function()
-    MenuOpen = not MenuOpen
-    if MenuOpen then
-        mainFrame.Visible = true
-        TweenService:Create(mainFrame, TweenInfo.new(0.3, Enum.EasingStyle.Quad), { BackgroundTransparency = 0.1 }):Play()
-    else
-        TweenService:Create(mainFrame, TweenInfo.new(0.2, Enum.EasingStyle.Quad), { BackgroundTransparency = 1 }):Play()
-        task.wait(0.2)
-        mainFrame.Visible = false
-    end
-end)
-
--- Notificação inicial
-Notify("NEXUS Premium", "Menu carregado com sucesso! Toque na bolinha.", 3)
-
-print("NEXUS Premium carregado. Use a bolinha flutuante para abrir o menu.")
+-- Inicializar notificação
+Notify("NEXUS Premium carregado", "https://img.icons8.com/ios-filled/50/ffffff/checkmark.png")
+print("NEXUS Premium carregado com sucesso!")
