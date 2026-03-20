@@ -1,7 +1,6 @@
 --[[
-    NEXUS PREMIUM - Versão Mobile Estável
-    Script completo e funcional para Murder Mystery 2
-    Inclui todas as funcionalidades e GUI funcional.
+    NEXUS OMEGA - Murder Mystery 2
+    Versão Otimizada com ESP Profissional e Menu Funcional
 ]]
 
 local Players = game:GetService("Players")
@@ -21,8 +20,21 @@ if canWrite then writefile("test.txt", "") end
 -- ==================== CONFIGURAÇÕES ====================
 local Settings = {
     Aimbot = { Enabled = false, Silent = false, FOV = 150, Target = "Murderer", Smoothness = 50 },
-    ESP = { Enabled = true, Players = true, Items = true, Tracers = false, Radar = false,
-        Colors = { Murderer = Color3.fromRGB(255,0,0), Sheriff = Color3.fromRGB(0,100,255), Innocent = Color3.fromRGB(0,255,0), Knife = Color3.fromRGB(255,165,0), Coin = Color3.fromRGB(255,255,0) } },
+    ESP = { 
+        Enabled = true, 
+        Players = true, 
+        Items = false, 
+        Tracers = true, 
+        Aura = true,
+        ShowNames = true,
+        Colors = { 
+            Murderer = Color3.fromRGB(255,0,0), 
+            Sheriff = Color3.fromRGB(0,100,255), 
+            Innocent = Color3.fromRGB(0,255,0), 
+            Knife = Color3.fromRGB(255,165,0), 
+            Coin = Color3.fromRGB(255,255,0) 
+        } 
+    },
     AutoFarm = { Collect = false, Reset = false, AutoPlay = false },
     Movement = { Fly = false, Speed = 16, AntiAFK = true },
     Combat = { KillAll = false, InstantWin = false, AutoParry = false },
@@ -57,12 +69,12 @@ local originalFire = nil
 function SaveSettings()
     if not canWrite then return end
     local data = HttpService:JSONEncode(Settings)
-    writefile("NexusPremium.json", data)
+    writefile("NexusOmega.json", data)
 end
 
 function LoadSettings()
-    if not canWrite or not isfile("NexusPremium.json") then return end
-    local data = readfile("NexusPremium.json")
+    if not canWrite or not isfile("NexusOmega.json") then return end
+    local data = readfile("NexusOmega.json")
     if data and data ~= "" then
         local loaded = HttpService:JSONDecode(data)
         for cat, vals in pairs(loaded) do
@@ -114,80 +126,173 @@ local function SafeFireRemote(remote, ...)
     if remote then remote:FireServer(...) end
 end
 
--- ==================== ESP (BillboardGui) ====================
+-- ==================== ESP PROFISSIONAL (DRAWING) ====================
 local function CreateESP()
+    -- Limpar objetos antigos
     for _, obj in pairs(ESPObjects) do
-        if obj and obj.Billboard then obj.Billboard:Destroy() end
+        if obj.box then obj.box:Remove() end
+        if obj.name then obj.name:Remove() end
+        if obj.tracer then obj.tracer:Remove() end
+        if obj.aura then obj.aura:Remove() end
     end
     ESPObjects = {}
-    if not Settings.ESP.Enabled then return end
-    if Settings.ESP.Players then
-        for _, player in pairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-                local role = player:GetAttribute("Role") or (player.Team and player.Team.Name) or ""
-                local color = Settings.ESP.Colors.Innocent
-                if role == "Murderer" then color = Settings.ESP.Colors.Murderer
-                elseif role == "Sheriff" then color = Settings.ESP.Colors.Sheriff end
-                local billboard = Instance.new("BillboardGui")
-                billboard.AlwaysOnTop = true
-                billboard.Size = UDim2.new(0, 60, 0, 30)
-                billboard.Adornee = player.Character:FindFirstChild("Head")
-                billboard.Parent = player.Character
-                local frame = Instance.new("Frame")
-                frame.Size = UDim2.new(1,0,1,0)
-                frame.BackgroundColor3 = color
-                frame.BackgroundTransparency = 0.7
-                frame.BorderSizePixel = 0
-                frame.Parent = billboard
-                local nameLabel = Instance.new("TextLabel")
-                nameLabel.Size = UDim2.new(1,0,1,0)
-                nameLabel.BackgroundTransparency = 1
-                nameLabel.Text = player.Name
-                nameLabel.TextColor3 = color
-                nameLabel.TextScaled = true
-                nameLabel.Font = Enum.Font.GothamBold
-                nameLabel.Parent = frame
-                local corner = Instance.new("UICorner")
-                corner.CornerRadius = UDim.new(0,8)
-                corner.Parent = frame
-                ESPObjects[player] = { Billboard = billboard }
-            end
+    if not Settings.ESP.Enabled or not Settings.ESP.Players then return end
+
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local role = player:GetAttribute("Role") or (player.Team and player.Team.Name) or ""
+            local color = Settings.ESP.Colors.Innocent
+            if role == "Murderer" then color = Settings.ESP.Colors.Murderer
+            elseif role == "Sheriff" then color = Settings.ESP.Colors.Sheriff end
+
+            -- Caixa (Box)
+            local box = Drawing.new("Square")
+            box.Thickness = 2
+            box.Color = color
+            box.Visible = false
+            box.Filled = false
+
+            -- Nome
+            local name = Drawing.new("Text")
+            name.Text = player.Name
+            name.Size = 14
+            name.Center = true
+            name.Outline = true
+            name.Color = color
+            name.Visible = false
+
+            -- Tracer (linha do pé até o chão)
+            local tracer = Drawing.new("Line")
+            tracer.Thickness = 1.5
+            tracer.Color = color
+            tracer.Visible = false
+
+            -- Aura (círculo difuso ao redor)
+            local aura = Drawing.new("Circle")
+            aura.Thickness = 1
+            aura.NumSides = 32
+            aura.Filled = true
+            aura.Transparency = 0.6
+            aura.Color = color
+            aura.Visible = false
+
+            ESPObjects[player] = { box = box, name = name, tracer = tracer, aura = aura }
         end
     end
-    if Settings.ESP.Items then
-        for _, obj in pairs(Workspace:GetDescendants()) do
-            if obj:IsA("BasePart") and (obj.Name:find("Coin") or obj.Name:find("Knife")) then
-                local color = obj.Name:find("Coin") and Settings.ESP.Colors.Coin or Settings.ESP.Colors.Knife
-                local text = obj.Name:find("Coin") and "💰" or "🔪"
-                local billboard = Instance.new("BillboardGui")
-                billboard.AlwaysOnTop = true
-                billboard.Size = UDim2.new(0, 40, 0, 20)
-                billboard.Adornee = obj
-                billboard.Parent = obj
-                local frame = Instance.new("Frame")
-                frame.Size = UDim2.new(1,0,1,0)
-                frame.BackgroundColor3 = color
-                frame.BackgroundTransparency = 0.5
-                frame.BorderSizePixel = 0
-                frame.Parent = billboard
-                local label = Instance.new("TextLabel")
-                label.Size = UDim2.new(1,0,1,0)
-                label.BackgroundTransparency = 1
-                label.Text = text
-                label.TextColor3 = color
-                label.TextScaled = true
-                label.Parent = frame
-                ESPObjects[obj] = { Billboard = billboard }
+end
+
+local function UpdateESP()
+    if not Settings.ESP.Enabled or not Settings.ESP.Players then return end
+
+    local localPos = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character.HumanoidRootPart.Position or Vector3.new()
+    local screenSize = Camera.ViewportSize
+
+    for player, objs in pairs(ESPObjects) do
+        if player and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+            local root = player.Character.HumanoidRootPart
+            local pos, onScreen = Camera:WorldToViewportPoint(root.Position)
+            local footPos = root.Position - Vector3.new(0, 3, 0)
+            local footScreen, footOn = Camera:WorldToViewportPoint(footPos)
+
+            if onScreen then
+                -- Caixa
+                if objs.box then
+                    local size = player.Character:GetExtentsSize()
+                    local width = size.X * 5
+                    local height = size.Y * 5
+                    local boxPos = Vector2.new(pos.X - width/2, pos.Y - height/2)
+                    objs.box.Size = Vector2.new(width, height)
+                    objs.box.Position = boxPos
+                    objs.box.Visible = true
+                end
+
+                -- Nome
+                if objs.name and Settings.ESP.ShowNames then
+                    objs.name.Position = Vector2.new(pos.X, pos.Y - 20)
+                    objs.name.Visible = true
+                end
+
+                -- Aura (círculo ao redor)
+                if objs.aura and Settings.ESP.Aura then
+                    local size = player.Character:GetExtentsSize()
+                    local radius = math.max(size.X, size.Y) * 3
+                    objs.aura.Radius = radius
+                    objs.aura.Position = Vector2.new(pos.X, pos.Y)
+                    objs.aura.Visible = true
+                end
+
+                -- Tracer (linha do pé até a base da tela)
+                if objs.tracer and Settings.ESP.Tracers and footOn then
+                    objs.tracer.From = Vector2.new(footScreen.X, footScreen.Y)
+                    objs.tracer.To = Vector2.new(footScreen.X, screenSize.Y)
+                    objs.tracer.Visible = true
+                elseif objs.tracer then
+                    objs.tracer.Visible = false
+                end
+            else
+                if objs.box then objs.box.Visible = false end
+                if objs.name then objs.name.Visible = false end
+                if objs.tracer then objs.tracer.Visible = false end
+                if objs.aura then objs.aura.Visible = false end
             end
+        else
+            if objs.box then objs.box.Visible = false end
+            if objs.name then objs.name.Visible = false end
+            if objs.tracer then objs.tracer.Visible = false end
+            if objs.aura then objs.aura.Visible = false end
         end
     end
 end
 
 function ClearESP()
     for _, obj in pairs(ESPObjects) do
-        if obj and obj.Billboard then obj.Billboard:Destroy() end
+        if obj.box then obj.box:Remove() end
+        if obj.name then obj.name:Remove() end
+        if obj.tracer then obj.tracer:Remove() end
+        if obj.aura then obj.aura:Remove() end
     end
     ESPObjects = {}
+end
+
+-- ==================== RADAR (opcional) ====================
+local function CreateRadar()
+    if RadarFrame then RadarFrame:Destroy() end
+    RadarFrame = Instance.new("Frame")
+    RadarFrame.Size = UDim2.new(0, 150, 0, 150)
+    RadarFrame.Position = UDim2.new(1, -160, 1, -160)
+    RadarFrame.BackgroundColor3 = Color3.fromRGB(0,0,0)
+    RadarFrame.BackgroundTransparency = 0.5
+    RadarFrame.BorderSizePixel = 0
+    RadarFrame.Parent = Gui
+    local radarCorner = Instance.new("UICorner")
+    radarCorner.CornerRadius = UDim.new(0,75)
+    radarCorner.Parent = RadarFrame
+    RunService.RenderStepped:Connect(function()
+        if not Settings.ESP.Radar then return end
+        for _, child in pairs(RadarFrame:GetChildren()) do
+            if child:IsA("ImageLabel") then child:Destroy() end
+        end
+        local center = RadarFrame.AbsoluteSize / 2
+        local localPos = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character.HumanoidRootPart.Position or Vector3.new()
+        for _, player in pairs(Players:GetPlayers()) do
+            if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                local relative = player.Character.HumanoidRootPart.Position - localPos
+                local angle = math.atan2(relative.X, relative.Z)
+                local dist = relative.Magnitude / 10
+                local x = center.X + math.sin(angle) * dist
+                local z = center.Y + math.cos(angle) * dist
+                if x > 0 and x < RadarFrame.AbsoluteSize.X and z > 0 and z < RadarFrame.AbsoluteSize.Y then
+                    local dot = Instance.new("ImageLabel")
+                    dot.Size = UDim2.new(0,4,0,4)
+                    dot.Position = UDim2.new(0,x,0,z)
+                    dot.BackgroundColor3 = Settings.ESP.Colors[player:GetAttribute("Role")] or Settings.ESP.Colors.Innocent
+                    dot.BackgroundTransparency = 0
+                    dot.Image = ""
+                    dot.Parent = RadarFrame
+                end
+            end
+        end
+    end)
 end
 
 -- ==================== FLY ====================
@@ -378,62 +483,20 @@ local function DisableSilentAim()
     end
 end
 
--- ==================== RADAR ====================
-local function CreateRadar()
-    if RadarFrame then RadarFrame:Destroy() end
-    RadarFrame = Instance.new("Frame")
-    RadarFrame.Size = UDim2.new(0, 150, 0, 150)
-    RadarFrame.Position = UDim2.new(1, -160, 1, -160)
-    RadarFrame.BackgroundColor3 = Color3.fromRGB(0,0,0)
-    RadarFrame.BackgroundTransparency = 0.5
-    RadarFrame.BorderSizePixel = 0
-    RadarFrame.Parent = Gui
-    local radarCorner = Instance.new("UICorner")
-    radarCorner.CornerRadius = UDim.new(0,75)
-    radarCorner.Parent = RadarFrame
-    RunService.RenderStepped:Connect(function()
-        if not Settings.ESP.Radar then return end
-        for _, child in pairs(RadarFrame:GetChildren()) do
-            if child:IsA("ImageLabel") then child:Destroy() end
-        end
-        local center = RadarFrame.AbsoluteSize / 2
-        local localPos = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character.HumanoidRootPart.Position or Vector3.new()
-        for _, player in pairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-                local relative = player.Character.HumanoidRootPart.Position - localPos
-                local angle = math.atan2(relative.X, relative.Z)
-                local dist = relative.Magnitude / 10
-                local x = center.X + math.sin(angle) * dist
-                local z = center.Y + math.cos(angle) * dist
-                if x > 0 and x < RadarFrame.AbsoluteSize.X and z > 0 and z < RadarFrame.AbsoluteSize.Y then
-                    local dot = Instance.new("ImageLabel")
-                    dot.Size = UDim2.new(0,4,0,4)
-                    dot.Position = UDim2.new(0,x,0,z)
-                    dot.BackgroundColor3 = Settings.ESP.Colors[player:GetAttribute("Role")] or Settings.ESP.Colors.Innocent
-                    dot.BackgroundTransparency = 0
-                    dot.Image = ""
-                    dot.Parent = RadarFrame
-                end
-            end
-        end
-    end)
-end
-
--- ==================== CRIAÇÃO DA GUI ====================
+-- ==================== CRIAÇÃO DA GUI (CORRIGIDA) ====================
 local function CreateFloatingButton()
     local screenGui = Instance.new("ScreenGui")
-    screenGui.Name = "NexusPremium"
+    screenGui.Name = "NexusOmega"
     screenGui.ResetOnSpawn = false
     screenGui.Parent = LocalPlayer:WaitForChild("PlayerGui")
     local button = Instance.new("ImageButton")
     button.Size = UDim2.new(0, 50, 0, 50)
     button.Position = UDim2.new(0, 10, 0, 100)
-    button.BackgroundColor3 = Color3.fromRGB(255,255,255)
-    button.BackgroundTransparency = 1
-    -- Usa uma imagem que sabemos que carrega (ícone do Roblox)
+    button.BackgroundColor3 = PrimaryColor
+    button.BackgroundTransparency = 0.3
     button.Image = "rbxasset://textures/ui/GuiImagePlaceholder.png"
     button.ImageColor3 = PrimaryColor
-    button.ImageTransparency = 0.3
+    button.ImageTransparency = 0.5
     button.Parent = screenGui
     local corner = Instance.new("UICorner")
     corner.CornerRadius = UDim.new(1,0)
@@ -479,7 +542,7 @@ local function CreateFloatingButton()
     return screenGui, button
 end
 
--- Funções de UI (Toggle, Slider, etc.)
+-- Funções de UI (Toggle, Slider, etc.) – permanecem iguais
 local function CreateToggle(parent, text, defaultValue, callback)
     local frame = Instance.new("Frame")
     frame.Size = UDim2.new(1, -20, 0, 40)
@@ -668,7 +731,7 @@ local function CreateDropdown(parent, text, options, defaultValue, callback)
     return frame
 end
 
--- ==================== CRIAÇÃO DO MENU PRINCIPAL ====================
+-- ==================== CRIAÇÃO DO MENU PRINCIPAL (CORRIGIDO) ====================
 local function CreateMainMenu()
     local mainFrame = Instance.new("Frame")
     mainFrame.Size = UDim2.new(0, 400, 0, 500)
@@ -786,12 +849,16 @@ local function CreateMainMenu()
                 Settings.ESP.Players = v
                 SaveSettings()
             end)
-            CreateToggle(scroll, "ESP Itens", Settings.ESP.Items, function(v)
-                Settings.ESP.Items = v
+            CreateToggle(scroll, "Mostrar Nomes", Settings.ESP.ShowNames, function(v)
+                Settings.ESP.ShowNames = v
                 SaveSettings()
             end)
-            CreateToggle(scroll, "Traçadores", Settings.ESP.Tracers, function(v)
+            CreateToggle(scroll, "Traçadores (Tracers)", Settings.ESP.Tracers, function(v)
                 Settings.ESP.Tracers = v
+                SaveSettings()
+            end)
+            CreateToggle(scroll, "Aura (Glow)", Settings.ESP.Aura, function(v)
+                Settings.ESP.Aura = v
                 SaveSettings()
             end)
             CreateToggle(scroll, "Radar 2D", Settings.ESP.Radar, function(v)
@@ -875,7 +942,7 @@ local function CreateMainMenu()
             CreateButton(scroll, "Testar Webhook", function()
                 if Settings.Protection.Webhook and Settings.Protection.Webhook ~= "" then
                     local success, err = pcall(function()
-                        HttpService:PostAsync(Settings.Protection.Webhook, HttpService:JSONEncode({content = "NEXUS Premium: Teste de notificação!"}))
+                        HttpService:PostAsync(Settings.Protection.Webhook, HttpService:JSONEncode({content = "NEXUS Omega: Teste de notificação!"}))
                     end)
                     if success then Notify("Webhook enviado") else Notify("Erro: " .. tostring(err)) end
                 else
@@ -908,7 +975,6 @@ local function CreateMainMenu()
             CreateButton(scroll, "Carregar Configurações", function()
                 LoadSettings()
                 Notify("Configurações carregadas")
-                -- Recriar menu para aplicar cores, etc.
                 UpdateContentFrame()
             end)
             CreateSlider(scroll, "Opacidade do Menu", 0.5, 1, Settings.UI.Opacity, function(v)
@@ -944,11 +1010,12 @@ if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") th
     LocalPlayer.Character.Humanoid.WalkSpeed = Settings.Movement.Speed
 end
 
--- Loop de atualização
+-- Loop de atualização (otimizado)
 RunService.RenderStepped:Connect(function()
-    if Settings.ESP.Enabled then
-        CreateESP()
-    else
+    if Settings.ESP.Enabled and Settings.ESP.Players then
+        if not ESPObjects[next(ESPObjects)] then CreateESP() end
+        UpdateESP()
+    elseif not Settings.ESP.Enabled then
         ClearESP()
     end
     if Settings.ESP.Radar and not RadarFrame then
@@ -986,5 +1053,5 @@ RunService.RenderStepped:Connect(function()
     end
 end)
 
-Notify("NEXUS Premium carregado!")
-print("NEXUS Premium ativado. Toque na bolinha para abrir o menu.")
+Notify("NEXUS Omega carregado!")
+print("NEXUS Omega ativado. Toque na bolinha para abrir o menu.")
