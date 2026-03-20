@@ -2,7 +2,7 @@
     NEXUS PREMIUM - Murder Mystery 2
     Mod Menu Profissional com Design VexonHub
     Compatível com executors mobile e PC
-    Versão: 2.0
+    Versão: 2.1
 ]]
 
 -- ==================== CONFIGURAÇÕES GLOBAIS ====================
@@ -14,7 +14,8 @@ local TweenService = game:GetService("TweenService")
 local HttpService = game:GetService("HttpService")
 local Workspace = game:GetService("Workspace")
 local Camera = Workspace.CurrentCamera
-local VirtualInput = game:GetService("VirtualInput") -- pode não existir em mobile
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local VirtualInput = game:GetService("VirtualInput") -- pode ser nil
 
 -- Verificar se o executor permite escrita de arquivos
 local canWrite = pcall(function() writefile("test.txt", "test") end)
@@ -91,14 +92,18 @@ local MenuOpen = false
 local Dragging = false
 local DragStart, DragStartPos
 local Notifications = {}
-local ESPObjects = {}
+local ESPObjects = {} -- tabela para armazenar ESPs
 local RadarFrame = nil
 local CurrentCategory = "Aimbot"
 local PlayerPositions = {} -- para radar
 local LastUpdate = tick()
-local FlySpeed = 0
+local FlySpeed = 50
 local Flying = false
 local OriginalSpeed = 16
+local FlyBodyVelocity = nil -- NOVO: controlador de voo
+local FlyDirection = Vector3.new(0,0,0) -- NOVO: direção do voo
+local LastRemoteCall = 0 -- NOVO: para anti-ban
+local RemoteEvents = {} -- NOVO: cache de remote events
 
 -- ==================== FUNÇÕES AUXILIARES ====================
 function SaveSettings()
@@ -122,6 +127,27 @@ function LoadSettings()
     end
     -- Aplicar cores
     PrimaryColor = ColorSchemes[Settings.UI.PrimaryColor] or ColorSchemes.Purple
+end
+
+-- NOVO: Função anti-ban: delay aleatório antes de ações suspeitas
+function AntiBanDelay()
+    if Settings.Protection.AntiBan then
+        local delay = math.random(500, 1500) / 1000 -- 0.5 a 1.5 segundos
+        wait(delay)
+    end
+end
+
+-- NOVO: Função para chamar remotos com anti-ban
+function SafeFireRemote(remote, ...)
+    if not remote then return end
+    if Settings.Protection.AntiBan then
+        local now = tick()
+        if now - LastRemoteCall < 0.5 then
+            wait(0.5 - (now - LastRemoteCall))
+        end
+        LastRemoteCall = tick()
+    end
+    remote:FireServer(...)
 end
 
 function Notify(text, icon)
@@ -632,8 +658,22 @@ function CreateMainMenu()
                 if v then
                     Flying = true
                     FlySpeed = 50
+                    -- Inicializa direção do voo
+                    FlyDirection = Vector3.new(0,0,0)
+                    -- Cria controlador de voo
+                    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+                        local hrp = LocalPlayer.Character.HumanoidRootPart
+                        FlyBodyVelocity = Instance.new("BodyVelocity")
+                        FlyBodyVelocity.MaxForce = Vector3.new(1,1,1) * 1e6
+                        FlyBodyVelocity.Parent = hrp
+                    end
                 else
                     Flying = false
+                    if FlyBodyVelocity then FlyBodyVelocity:Destroy() end
+                    FlyBodyVelocity = nil
+                    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+                        LocalPlayer.Character.Humanoid.PlatformStand = false
+                    end
                 end
             end)
             CreateSlider("Speed Hack", 16, 100, Settings.Movement.Speed, function(v)
@@ -670,21 +710,29 @@ function CreateMainMenu()
 
         elseif CurrentCategory == "Combate" then
             CreateButton("Kill All", function()
-                for _, player in pairs(Players:GetPlayers()) do
-                    if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("Humanoid") then
-                        player.Character.Humanoid.Health = 0
+                AntiBanDelay()
+                -- Encontrar remote de kill e disparar para todos os jogadores
+                local killRemote = RemoteEvents["KillAll"] or ReplicatedStorage:FindFirstChild("KillPlayer")
+                if killRemote then
+                    for _, player in pairs(Players:GetPlayers()) do
+                        if player ~= LocalPlayer then
+                            SafeFireRemote(killRemote, player)
+                        end
                     end
+                    Notify("Kill All executado")
+                else
+                    Notify("Remote de kill não encontrado")
                 end
-                Notify("Kill All executado")
             end)
             CreateButton("Instant Win", function()
-                -- Simula vitória instantânea (pode não funcionar em todos servidores)
-                -- Tenta enviar um evento remoto (exemplo)
-                local remote = game:GetService("ReplicatedStorage"):FindFirstChild("WinEvent") -- ajustar
-                if remote then
-                    remote:FireServer()
+                AntiBanDelay()
+                local winRemote = RemoteEvents["Win"] or ReplicatedStorage:FindFirstChild("WinGame")
+                if winRemote then
+                    SafeFireRemote(winRemote)
+                    Notify("Instant Win tentado")
+                else
+                    Notify("Remote de win não encontrado")
                 end
-                Notify("Instant Win tentado")
             end)
             CreateToggle("Auto Parry", Settings.Combat.AutoParry, function(v)
                 Settings.Combat.AutoParry = v
@@ -752,7 +800,7 @@ function CreateMainMenu()
                 end)
                 if success and data then
                     local latestVersion = data:match("VERSION=(.+)")
-                    if latestVersion and latestVersion ~= "2.0" then
+                    if latestVersion and latestVersion ~= "2.1" then
                         Notify("Nova versão disponível: " .. latestVersion)
                     else
                         Notify("Você está na versão mais recente")
@@ -781,8 +829,17 @@ function CreateMainMenu()
             CreateToggle("Modo Stealth", Settings.Misc.Stealth, function(v)
                 Settings.Misc.Stealth = v
                 if v then
-                    -- Desativar visualmente as funções (manter lógica)
-                    -- Por exemplo, esconder ESP, etc.
+                    -- Esconder ESP
+                    ClearESP()
+                    if RadarFrame then RadarFrame.Visible = false end
+                    -- Esconder bolinha e menu (opcional)
+                    if FloatingButton then FloatingButton.Visible = false end
+                    MainMenu.Visible = false
+                    MenuOpen = false
+                else
+                    if Settings.ESP.Players then CreateESP() end
+                    if RadarFrame then RadarFrame.Visible = Settings.ESP.Radar end
+                    if FloatingButton then FloatingButton.Visible = true end
                 end
                 SaveSettings()
             end)
@@ -834,22 +891,79 @@ function CreateMainMenu()
     return mainFrame
 end
 
--- ==================== FUNÇÕES ESP (DRAWING) ====================
-local function CreateESP()
-    -- Implementação com Drawing (se suportado)
-    -- Se não, usar BillboardGui
-    pcall(function()
+-- ==================== FUNÇÕES ESP (BILLBOARDGUI) ====================
+function CreateESP()
+    ClearESP()
+    if not Settings.ESP.Enabled then return end
+
+    -- ESP para jogadores
+    if Settings.ESP.Players then
         for _, player in pairs(Players:GetPlayers()) do
-            if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-                -- Criar objetos de desenho
+            if player ~= LocalPlayer and player.Character then
+                local highlight = Instance.new("BillboardGui")
+                highlight.Name = "ESP_" .. player.Name
+                highlight.Size = UDim2.new(0, 4, 0, 4)
+                highlight.AlwaysOnTop = true
+                highlight.Adornee = player.Character:FindFirstChild("HumanoidRootPart") or player.Character
+                highlight.Parent = player.Character
+
+                local frame = Instance.new("Frame")
+                frame.Size = UDim2.new(0, 50, 0, 20)
+                frame.BackgroundColor3 = Color3.fromRGB(0,0,0)
+                frame.BackgroundTransparency = 0.5
+                frame.BorderSizePixel = 0
+                frame.Parent = highlight
+
+                local label = Instance.new("TextLabel")
+                label.Size = UDim2.new(1,0,1,0)
+                label.BackgroundTransparency = 1
+                label.Text = player.Name
+                label.TextColor3 = Settings.ESP.Colors[player:GetAttribute("Role")] or Settings.ESP.Colors.Innocent
+                label.TextSize = 12
+                label.Font = Enum.Font.GothamBold
+                label.Parent = frame
+
+                table.insert(ESPObjects, highlight)
             end
         end
-    end)
+    end
+
+    -- ESP para itens (moedas e faca)
+    if Settings.ESP.Items then
+        for _, obj in pairs(Workspace:GetDescendants()) do
+            if obj:IsA("BasePart") and (obj.Name:find("Coin") or obj.Name:find("Knife")) then
+                local highlight = Instance.new("BillboardGui")
+                highlight.Name = "ItemESP_" .. obj.Name
+                highlight.Size = UDim2.new(0, 2, 0, 2)
+                highlight.AlwaysOnTop = true
+                highlight.Adornee = obj
+                highlight.Parent = obj
+
+                local frame = Instance.new("Frame")
+                frame.Size = UDim2.new(0, 30, 0, 15)
+                frame.BackgroundColor3 = Color3.fromRGB(0,0,0)
+                frame.BackgroundTransparency = 0.5
+                frame.Parent = highlight
+
+                local label = Instance.new("TextLabel")
+                label.Size = UDim2.new(1,0,1,0)
+                label.BackgroundTransparency = 1
+                label.Text = obj.Name:find("Coin") and "💰" or "🔪"
+                label.TextColor3 = Settings.ESP.Colors.Knife
+                label.TextSize = 12
+                label.Parent = frame
+
+                table.insert(ESPObjects, highlight)
+            end
+        end
+    end
 end
 
 function ClearESP()
     for _, obj in pairs(ESPObjects) do
-        if obj and obj.Remove then obj:Remove() end
+        if obj and obj.Parent then
+            obj:Destroy()
+        end
     end
     ESPObjects = {}
 end
@@ -902,9 +1016,23 @@ function CreateRadar()
 end
 
 -- ==================== LOOP DE FUNÇÕES ====================
--- Aimbot (simples)
+-- Aimbot com Silent Aim (através de remotos)
+local function SilentAim(target)
+    if not target or not target.Character or not target.Character:FindFirstChild("HumanoidRootPart") then return end
+    -- Intercepta o remote de ataque e substitui o alvo
+    -- Na prática, o script precisaria encontrar o remote de ataque e modificar os argumentos
+    -- Aqui faremos uma abordagem simplificada: se Silent Aim estiver ativo, não movemos a câmera,
+    -- mas na hora de atacar (por exemplo, ao pressionar a tecla de ataque), chamamos o remote com o alvo.
+    -- Como não há evento de ataque nativo no script, deixamos como referência.
+    -- Para fins de demonstração, mantemos o aimbot normal mas desabilitamos movimento da câmera quando Silent Aim estiver ativo.
+end
+
 local function AimAt(target)
     if not target or not target.Character or not target.Character:FindFirstChild("HumanoidRootPart") then return end
+    if Settings.Aimbot.Silent then
+        -- Não mover câmera
+        return
+    end
     local targetPos = target.Character.HumanoidRootPart.Position
     local camPos = Camera.CFrame.Position
     local direction = (targetPos - camPos).unit
@@ -929,42 +1057,77 @@ local function AutoReset()
     if not LocalPlayer.Character or not LocalPlayer.Character:FindFirstChild("Humanoid") or LocalPlayer.Character.Humanoid.Health <= 0 then
         -- Esperar respawn
         wait(2)
-        -- Tentar reentrar? Simular clique em botão de reiniciar
-        local resetButton = game:GetService("StarterGui"):FindFirstChild("ResetButton") -- lugar comum
-        if resetButton then
+        -- Tentar clicar no botão de reiniciar
+        local resetButton = LocalPlayer.PlayerGui:FindFirstChild("ResetButton", true) -- ajustar conforme o jogo
+        if resetButton and resetButton:IsA("TextButton") then
             resetButton:FireClick()
         end
     end
 end
 
--- Anti-AFK
-local function AntiAFK()
-    if Settings.Movement.AntiAFK then
-        -- Simular movimento de mouse ou toque
-        VirtualInput:SendMouseButtonEvent(0, 0, 0, true, Enum.UserInputType.MouseButton1, 1)
-        wait(0.1)
-        VirtualInput:SendMouseButtonEvent(0, 0, 0, false, Enum.UserInputType.MouseButton1, 1)
+-- Auto Play: detectar fim de round e clicar automaticamente
+local function AutoPlay()
+    if not Settings.AutoFarm.AutoPlay then return end
+    -- Verificar se o round acabou (exemplo: se aparecer tela de "You died" ou "Round ended")
+    local screen = LocalPlayer.PlayerGui:FindFirstChild("RoundEndScreen") -- ajustar nome
+    if screen and screen.Enabled then
+        local nextButton = screen:FindFirstChild("NextRoundButton") -- ajustar
+        if nextButton then
+            nextButton:FireClick()
+        end
     end
 end
 
--- Fly
-local function FlyLoop()
-    if Flying then
-        local humanoid = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid")
-        if humanoid then
-            humanoid.PlatformStand = true
-            local bodyVelocity = Instance.new("BodyVelocity")
-            bodyVelocity.MaxForce = Vector3.new(1, 1, 1) * 100000
-            bodyVelocity.Velocity = Vector3.new(0, FlySpeed, 0)
-            bodyVelocity.Parent = LocalPlayer.Character.HumanoidRootPart
-            -- Controles (WASD) para movimentação no ar
-            -- Implementação simplificada
-        end
-    else
-        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
-            LocalPlayer.Character.Humanoid.PlatformStand = false
-            for _, v in pairs(LocalPlayer.Character:GetDescendants()) do
-                if v:IsA("BodyVelocity") then v:Destroy() end
+-- Anti-AFK (simples: movimenta mouse/câmera)
+local function AntiAFK()
+    if Settings.Movement.AntiAFK then
+        -- Simular movimento da câmera
+        local originalCamera = Camera.CFrame
+        Camera.CFrame = Camera.CFrame * CFrame.Angles(0, math.rad(1), 0)
+        wait(0.1)
+        Camera.CFrame = originalCamera
+    end
+end
+
+-- Fly com controle direcional (WASD / toque)
+local function UpdateFlyDirection()
+    if not Flying or not LocalPlayer.Character then return end
+    local hrp = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    if not FlyBodyVelocity then
+        FlyBodyVelocity = Instance.new("BodyVelocity")
+        FlyBodyVelocity.MaxForce = Vector3.new(1,1,1) * 1e6
+        FlyBodyVelocity.Parent = hrp
+    end
+    -- Obter direção baseada na câmera e inputs
+    local forward = Camera.CFrame.LookVector * (UserInputService:IsKeyDown(Enum.KeyCode.W) and 1 or (UserInputService:IsKeyDown(Enum.KeyCode.S) and -1 or 0))
+    local right = Camera.CFrame.RightVector * (UserInputService:IsKeyDown(Enum.KeyCode.D) and 1 or (UserInputService:IsKeyDown(Enum.KeyCode.A) and -1 or 0))
+    local up = Vector3.new(0, (UserInputService:IsKeyDown(Enum.KeyCode.Space) and 1 or (UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) and -1 or 0)), 0)
+    local direction = (forward + right + up).unit * FlySpeed
+    FlyBodyVelocity.Velocity = direction
+    -- Ativar PlatformStand para evitar gravidade
+    local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
+    if humanoid then
+        humanoid.PlatformStand = true
+    end
+end
+
+-- Auto Parry (defesa automática quando alguém se aproxima)
+local function AutoParry()
+    if not Settings.Combat.AutoParry then return end
+    local character = LocalPlayer.Character
+    if not character then return end
+    local root = character:FindFirstChild("HumanoidRootPart")
+    if not root then return end
+    for _, player in pairs(Players:GetPlayers()) do
+        if player ~= LocalPlayer and player.Character then
+            local targetRoot = player.Character:FindFirstChild("HumanoidRootPart")
+            if targetRoot and (targetRoot.Position - root.Position).magnitude < 5 then
+                -- Simular defesa (ex: clicar em botão de defesa)
+                local parryRemote = RemoteEvents["Parry"] or ReplicatedStorage:FindFirstChild("Parry")
+                if parryRemote then
+                    SafeFireRemote(parryRemote)
+                end
             end
         end
     end
@@ -973,6 +1136,7 @@ end
 -- ==================== EXECUÇÃO PRINCIPAL ====================
 LoadSettings()
 Gui = CreateFloatingButton()
+FloatingButton = Gui:FindFirstChild("NexusPremium") -- salvar referência
 MainMenu = CreateMainMenu()
 
 -- Aplicar velocidade inicial
@@ -980,50 +1144,68 @@ if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") th
     LocalPlayer.Character.Humanoid.WalkSpeed = Settings.Movement.Speed
 end
 
+-- Detectar remotes do jogo para usar no Kill All/Instant Win
+pcall(function()
+    for _, obj in pairs(ReplicatedStorage:GetDescendants()) do
+        if obj:IsA("RemoteEvent") or obj:IsA("RemoteFunction") then
+            local name = obj.Name
+            if name:lower():find("kill") or name:lower():find("die") then
+                RemoteEvents["KillAll"] = obj
+            elseif name:lower():find("win") or name:lower():find("victory") then
+                RemoteEvents["Win"] = obj
+            elseif name:lower():find("parry") or name:lower():find("block") then
+                RemoteEvents["Parry"] = obj
+            end
+        end
+    end
+end)
+
 -- Loop principal
 RunService.RenderStepped:Connect(function()
-    if Settings.ESP.Enabled and Settings.ESP.Players then
-        CreateESP()
-    end
-    if Settings.Aimbot.Enabled then
-        local target = nil
-        if Settings.Aimbot.Target == "Assassino" then
-            for _, player in pairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer and player:GetAttribute("Role") == "Murderer" then
-                    target = player
-                    break
-                end
-            end
-        elseif Settings.Aimbot.Target == "Xerife" then
-            for _, player in pairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer and player:GetAttribute("Role") == "Sheriff" then
-                    target = player
-                    break
-                end
-            end
-        elseif Settings.Aimbot.Target == "Inocente" then
-            for _, player in pairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer and not player:GetAttribute("Role") then
-                    target = player
-                    break
-                end
-            end
-        elseif Settings.Aimbot.Target == "Todos" then
-            local nearest = nil
-            local nearestDist = math.huge
-            for _, player in pairs(Players:GetPlayers()) do
-                if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
-                    local dist = (LocalPlayer.Character.HumanoidRootPart.Position - player.Character.HumanoidRootPart.Position).magnitude
-                    if dist < nearestDist then
-                        nearestDist = dist
-                        nearest = player
+    if not Settings.Misc.Stealth then
+        if Settings.ESP.Enabled and Settings.ESP.Players then
+            CreateESP()
+        end
+        if Settings.Aimbot.Enabled then
+            local target = nil
+            if Settings.Aimbot.Target == "Assassino" then
+                for _, player in pairs(Players:GetPlayers()) do
+                    if player ~= LocalPlayer and player:GetAttribute("Role") == "Murderer" then
+                        target = player
+                        break
                     end
                 end
+            elseif Settings.Aimbot.Target == "Xerife" then
+                for _, player in pairs(Players:GetPlayers()) do
+                    if player ~= LocalPlayer and player:GetAttribute("Role") == "Sheriff" then
+                        target = player
+                        break
+                    end
+                end
+            elseif Settings.Aimbot.Target == "Inocente" then
+                for _, player in pairs(Players:GetPlayers()) do
+                    if player ~= LocalPlayer and not player:GetAttribute("Role") then
+                        target = player
+                        break
+                    end
+                end
+            elseif Settings.Aimbot.Target == "Todos" then
+                local nearest = nil
+                local nearestDist = math.huge
+                for _, player in pairs(Players:GetPlayers()) do
+                    if player ~= LocalPlayer and player.Character and player.Character:FindFirstChild("HumanoidRootPart") then
+                        local dist = (LocalPlayer.Character.HumanoidRootPart.Position - player.Character.HumanoidRootPart.Position).magnitude
+                        if dist < nearestDist then
+                            nearestDist = dist
+                            nearest = player
+                        end
+                    end
+                end
+                target = nearest
             end
-            target = nearest
-        end
-        if target then
-            AimAt(target)
+            if target then
+                AimAt(target)
+            end
         end
     end
     if Settings.AutoFarm.Collect then
@@ -1032,24 +1214,22 @@ RunService.RenderStepped:Connect(function()
     if Settings.AutoFarm.Reset then
         AutoReset()
     end
+    if Settings.AutoFarm.AutoPlay then
+        AutoPlay()
+    end
     if Settings.Movement.AntiAFK then
         AntiAFK()
     end
     if Settings.Movement.Fly then
-        FlyLoop()
-    end
-    -- Auto Play (simples)
-    if Settings.AutoFarm.AutoPlay then
-        -- Pular round automaticamente (detectar fim)
-        local roundEnded = false -- implementar
-        if roundEnded then
-            -- Simular clique no botão de próximo round
+        UpdateFlyDirection()
+    else
+        if FlyBodyVelocity then FlyBodyVelocity:Destroy() end
+        FlyBodyVelocity = nil
+        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("Humanoid") then
+            LocalPlayer.Character.Humanoid.PlatformStand = false
         end
     end
-    -- Auto Parry (defesa automática)
-    if Settings.Combat.AutoParry then
-        -- Detectar quando alguém estiver perto e bloquear
-    end
+    AutoParry()
 end)
 
 -- Inicializar notificação
